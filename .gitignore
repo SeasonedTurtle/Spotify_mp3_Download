@@ -1,0 +1,4 @@
+echo "/target/" > .gitignore
+echo ".env" >> .gitignore
+echo "urls.txt" >> .gitignore
+echo "/downloaded tracks/" >> .gitignore

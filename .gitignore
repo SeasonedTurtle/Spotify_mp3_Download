@@ -1,4 +1,9 @@
-echo "/target/" > .gitignore
-echo ".env" >> .gitignore
-echo "urls.txt" >> .gitignore
-echo "/downloaded tracks/" >> .gitignore
+# Ignore the massive Rust compile cache
+/target/
+
+# Ignore your secret API keys
+.env
+
+# Ignore your private text files and downloads
+urls.txt
+/downloaded tracks/

@@ -29,7 +29,7 @@ Before using or developing this application, please ensure you meet the followin
 
 Pre-compiled, completely self-contained portable packages are available in our Releases section. 
 
-👉 **[Download the Latest Release Here](https://github.com/SeasonedTurtle/Spotify_mp3_Download/portable)**
+👉 **[Download the Latest Release Here](https://github.com/SeasonedTurtle/Spotify_mp3_Download/tree/main/portable)**
 
 ### How to Run:
 

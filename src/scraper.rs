@@ -79,7 +79,7 @@ fn parse_spotify_id(url: &str, kind: &str) -> Result<String, String> {
     let marker = format!("/{}/", kind);
     url.split(&marker)
         .nth(1)
-        .and_then(|s| s.split(|c| c == '?' || c == '/').next())
+        .and_then(|s| s.split(['?', '/']).next())
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())

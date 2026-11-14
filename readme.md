@@ -1,20 +1,29 @@
 # Spotify Downloader
 
-A cross-platform, asynchronous desktop application built in Rust using 'eframe'/'egui' and 'Tokio'. This tool expands Spotify links into track listings and concurrently downloads them with an advanced concurrency queue system, leveraging 'yt-dlp' for a reliable and secure download process.
+A cross-platform, asynchronous desktop application built in Rust using `eframe`/`egui` and `Tokio`. This tool expands Spotify links into track listings and concurrently downloads them with a concurrency queue, leveraging `yt-dlp` for audio extraction.
 
 ---
 
-## 📌 Prerequisites & Critical Warnings
+## Metadata modes
 
-Before using or developing this application, please ensure you meet the following requirements:
+| Mode | Needs API keys? | Notes |
+|------|-----------------|-------|
+| **Web Scrape (JSON)** (default) | No | Reads Spotify's public embed `__NEXT_DATA__` / oEmbed JSON. Avoids Developer API rate limits. Large playlists may be truncated by the embed (~100 tracks). |
+| **Spotify API** | Yes (`Client ID` / `Client Secret`) | Official Web API with full playlist/album pagination. Spotify Premium + Developer Dashboard required. |
 
-> ⚠️ **Spotify Premium Required:** You **must** have a Spotify Premium account to access the developer dashboard and generate your API credentials ('Client ID' and 'Client Secret').
-> 
-> 🛑 **No VPNs Allowed:** The Spotify API and downloader engine will block or fail authentication if you are actively connected to a VPN. Please disable your VPN before launching the app.
+Switch modes in **Config**. Save Config applies credentials to the running session immediately (not only to `.env`).
 
 ---
 
-## 📸 Screenshots
+## Prerequisites
+
+- **yt-dlp** must be installed and available on your `PATH`
+- **No VPN** while authenticating against Spotify services (API mode especially)
+- API mode only: Spotify Premium + [Developer Dashboard](https://developer.spotify.com/dashboard) credentials
+
+---
+
+## Screenshots
 
 ![Screenshot 1](examples/Screenshot%20From%202026-06-08%2022-08-56.png)
 
@@ -23,78 +32,89 @@ Before using or developing this application, please ensure you meet the followin
 ![Screenshot 3](examples/Screenshot%20From%202026-06-08%2022-09-34.png)
 
 ![Screenshot 4](examples/Screenshot%20From%202026-06-08%2022-10-43.png)
+
 ---
 
-## 📥 Downloading & Running the App
+## Downloading & Running the App
 
-Pre-compiled, completely self-contained portable packages are available in our Releases section. 
+Pre-compiled portable packages are available in Releases / `portable/`.
 
-👉 **[Download the Latest Release Here](https://github.com/SeasonedTurtle/Spotify_mp3_Download/tree/main/portable)**
+### Windows
+1. Download `spotify_downloader_windows.zip`
+2. Extract anywhere
+3. Run `spotify_download.exe`
 
-### How to Run:
-
-#### 🪟 On Windows
-1. Download 'spotify_downloader_windows.zip'.
-2. Extract the folder completely anywhere on your PC.
-3. Open the folder and double-click 'spotify_download.exe' to launch the app.
-
-#### 🐧 On Linux
-1. Download 'spotify_downloader_linux.zip'.
-2. Extract the archive folder.
-3. Open your terminal inside the extracted folder, mark the binary as executable, and run it:
+### Linux
 ```bash
 chmod +x spotify_download
 ./spotify_download
 ```
+
 ---
 
-## Forking & Building From Source
+## Building From Source
 
-If you want to customize the layout, modify the downloader engine, or contribute to the project, follow these steps to build the application from scratch.
-
-### 1. Clone the Repository
-First, fork this repository to your own GitHub account, then clone it locally:
+### 1. Clone
 ```bash
 git clone git@github.com:SeasonedTurtle/Spotify_mp3_Download.git
 cd Spotify_mp3_Download
 ```
 
-### 2. Install System Dependencies (Linux Only)
-If you are building on Ubuntu/Debian, you will need the standard GTK and development libraries for 'egui' to compile successfully:
+### 2. System dependencies (Ubuntu/Debian)
 ```bash
 sudo apt update
-sudo apt install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
+sudo apt install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+  libxkbcommon-dev libssl-dev pkg-config
 ```
 
-### 3. Running in Development Mode
-To compile and test the application with full debug assertions and logs active, run:
+Also install [yt-dlp](https://github.com/yt-dlp/yt-dlp).
+
+### 3. Dev run
 ```bash
 cargo run
 ```
 
-### 4. Compiling the Production Release
-To build the highly optimized, compressed executable for distribution:
-
+### 4. Release build
 ```bash
 cargo build --release
 ```
-The compiled binary will be placed inside ''.
+Binary: `target/release/spotify_download`
 
-### Cross-Compiling for Windows from Linux
-If you are developing on a Linux environment but want to generate the '.exe' for Windows users, install the MinGW toolchain:
+### Cross-compile Windows from Linux
 ```bash
 rustup target add x86_64-pc-windows-gnu
 sudo apt install mingw-w64
 cargo build --target x86_64-pc-windows-gnu --release
 ```
-Your Windows binary will be placed inside 'target/x86_64-pc-windows-gnu/release/spotify_download.exe'.
+
+---
+
+## Config (`.env`)
+
+```env
+METADATA_SOURCE=scrape
+DOWNLOAD_DIR=downloads
+RSPOTIFY_CLIENT_ID=
+RSPOTIFY_CLIENT_SECRET=
+```
+
+`METADATA_SOURCE` may be `scrape` (default) or `api`.
+
+---
+
+## Reliability notes
+
+- Spotify API clients are cached (one token) instead of re-authing per track
+- Album track lists are paginated in API mode
+- Existing MP3s are skipped; failed yt-dlp downloads retry up to 3 times
+- Filenames are sanitized for Windows/Linux illegal characters
+- Duplicate track URLs are ignored when loading
 
 ---
 
 ## Contributing
-Contributions are what make the open-source community such an amazing place to learn, inspire, and create. 
-1. **Fork** the Project
-2. Create your Feature Branch ('git checkout -b feature/AmazingFeature')
-3. **Commit** your Changes ('git commit -m 'Add some AmazingFeature'')
-4. **Push** to the Branch ('git push origin feature/AmazingFeature')
-5. Open a **Pull Request**
+1. Fork the project
+2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your changes
+4. Push to the branch
+5. Open a Pull Request

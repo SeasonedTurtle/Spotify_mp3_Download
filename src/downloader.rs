@@ -1,31 +1,91 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tracing::info;
 
-pub async fn download_from_spotify(spotify_url: &str, output_folder: &str) -> Result<(), String> {
-    
-    // 1. Get metadata from Spotify
-    let metadata = crate::spotify::get_track_metadata(spotify_url).await?;
-    
-    // 2. Sanitize strings so Windows/Linux don't freak out over weird characters in song names
-    let safe_artist = metadata.artist.replace("/", "_").replace("\\", "_");
-    let safe_album = metadata.album.replace("/", "_").replace("\\", "_");
-    let safe_title = metadata.title.replace("/", "_").replace("\\", "_");
-    
-    // 3. Build the final, bulletproof file path using the user's custom directory!
-    let final_path = Path::new(output_folder)
-        .join(&safe_artist)
-        .join(&safe_album)
-        .join(format!("{} - {}", safe_artist, safe_title));
+use crate::spotify::MetadataSource;
 
-    // 4. Construct the targeted yt-dlp search query
-    // Adding "audio" helps ensure yt-dlp favors static audio streams over music videos
+/// Characters that are illegal or awkward in Windows/Linux filenames.
+fn sanitize_filename(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        match ch {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0' => out.push('_'),
+            c if c.is_control() => out.push('_'),
+            c => out.push(c),
+        }
+    }
+    let trimmed = out.trim().trim_matches('.');
+    if trimmed.is_empty() {
+        "unknown".to_string()
+    } else {
+        // Keep paths from getting absurdly long on Windows.
+        trimmed.chars().take(120).collect()
+    }
+}
+
+fn final_mp3_path(output_folder: &str, artist: &str, album: &str, title: &str) -> PathBuf {
+    Path::new(output_folder)
+        .join(sanitize_filename(artist))
+        .join(sanitize_filename(album))
+        .join(format!(
+            "{} - {}.mp3",
+            sanitize_filename(artist),
+            sanitize_filename(title)
+        ))
+}
+
+pub async fn download_from_spotify(
+    spotify_url: &str,
+    output_folder: &str,
+    source: MetadataSource,
+) -> Result<String, String> {
+    let metadata = crate::spotify::get_track_metadata(spotify_url, source).await?;
+
+    let final_file = final_mp3_path(
+        output_folder,
+        &metadata.artist,
+        &metadata.album,
+        &metadata.title,
+    );
+
+    if final_file.exists() {
+        let msg = format!("Skipped (already exists): {}", final_file.display());
+        info!("{}", msg);
+        return Ok(msg);
+    }
+
+    // yt-dlp output template without the fixed .mp3 suffix (it fills %(ext)s).
+    let output_stem = final_file.with_extension("");
     let search_query = format!("ytsearch1:{} {} audio", metadata.title, metadata.artist);
 
-    info!("Forwarding search query to YouTube downloader engine...");
+    info!(
+        "Downloading '{}' by '{}' via yt-dlp...",
+        metadata.title, metadata.artist
+    );
 
-    // 5. Download and convert using our yt-dlp runner
-    crate::youtube::download_to_mp3(&search_query, &final_path).await?;
+    // A couple of retries helps with transient yt-dlp / network blips.
+    let mut last_err = String::new();
+    for attempt in 1..=3 {
+        match crate::youtube::download_to_mp3(&search_query, &output_stem).await {
+            Ok(()) => {
+                let msg = format!(
+                    "{} - {} → {}",
+                    metadata.artist,
+                    metadata.title,
+                    final_file.display()
+                );
+                return Ok(msg);
+            }
+            Err(e) => {
+                last_err = e;
+                if attempt < 3 {
+                    tokio::time::sleep(std::time::Duration::from_secs(attempt)).await;
+                }
+            }
+        }
+    }
 
-    println!("\n🎉 Success! Track saved to: {:?}", final_path.with_extension("mp3"));
-    Ok(())
+    Err(format!(
+        "Failed after retries for '{} - {}': {}",
+        metadata.artist, metadata.title, last_err
+    ))
 }

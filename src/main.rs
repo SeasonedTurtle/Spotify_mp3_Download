@@ -6,6 +6,7 @@ use eframe::egui;
 mod downloader;
 mod library;
 mod metadata_cache;
+mod ocr_import;
 mod scraper;
 mod spotify;
 mod ui;
@@ -20,8 +21,8 @@ fn main() -> eframe::Result {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([900.0, 640.0])
-            .with_min_inner_size([640.0, 420.0]),
+            .with_inner_size([960.0, 780.0])
+            .with_min_inner_size([700.0, 520.0]),
         ..Default::default()
     };
 

@@ -137,11 +137,12 @@ impl DownloaderApp {
         );
         ui.add_space(4.0);
         ui.label(
-            "1) Open https://open.spotify.com/collection/albums (logged in)\n\
-             2) Click Copy console scraper → paste into browser console (F12) → Enter\n\
-             3) Ignore Spotify CORS/gabo-receiver errors — they are normal\n\
-             4) If clipboard is blocked, in console run: copy(window.__spotifyAlbumUrls)\n\
-             5) Paste URLs here → Import pasted albums → Download All",
+            "1) Open https://open.spotify.com (logged in) — collection/albums is fine\n\
+             2) Copy console scraper → paste into console (F12) → Enter\n\
+             3) Wait until it prints TOTAL (fetches ALL saved albums, not just visible ones)\n\
+             4) Run: copy(window.__spotifyAlbumUrls)\n\
+             5) Paste here → Import pasted albums → Download All\n\
+             Ignore CORS/gabo-receiver errors — they are normal.",
         );
         ui.add_space(6.0);
         ui.horizontal(|ui| {

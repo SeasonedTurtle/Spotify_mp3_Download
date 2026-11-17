@@ -20,61 +20,70 @@ use crate::scraper;
 /// Must match the Spotify Developer Dashboard Redirect URI exactly.
 pub const DEFAULT_REDIRECT_URI: &str = "http://127.0.0.1:8888";
 
-/// Paste this into the browser console on https://open.spotify.com/collection/albums.
-/// Ignores Spotify CORS noise. Avoids async clipboard blocking by using a textarea fallback
-/// and saving URLs on `window.__spotifyAlbumUrls` for a manual `copy(...)` if needed.
+/// Paste on https://open.spotify.com (logged in). Uses the page session token to fetch
+/// ALL saved albums via /me/albums (not just the ~30 visible in the DOM).
 pub const BROWSER_ALBUM_SCRAPER_JS: &str = r#"(async () => {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const collect = () => [...document.querySelectorAll('a[href*="/album/"]')]
-    .map((a) => (a.href || '').split('?')[0])
-    .filter((h) => /open\.spotify\.com\/album\/[A-Za-z0-9]+/.test(h));
 
-  let unique = [];
-  for (let i = 0; i < 50; i++) {
-    const root = document.scrollingElement || document.documentElement;
-    root.scrollTo(0, root.scrollHeight);
-    window.scrollTo(0, document.body.scrollHeight);
-    unique = [...new Set([...unique, ...collect()])];
-    await sleep(350);
+  async function getToken() {
+    const res = await fetch(
+      'https://open.spotify.com/get_access_token?reason=transport&productType=web_player',
+      { credentials: 'include' }
+    );
+    if (!res.ok) throw new Error('Token HTTP ' + res.status);
+    const data = await res.json();
+    if (!data.accessToken) throw new Error('No accessToken in response');
+    return data.accessToken;
   }
 
+  async function fetchAllSavedAlbumUrls(token) {
+    const urls = [];
+    let offset = 0;
+    const limit = 50;
+    for (;;) {
+      const res = await fetch(
+        'https://api.spotify.com/v1/me/albums?limit=' + limit + '&offset=' + offset,
+        { headers: { Authorization: 'Bearer ' + token } }
+      );
+      if (res.status === 429) {
+        const wait = Number(res.headers.get('Retry-After') || '3');
+        console.warn('Rate limited, waiting ' + wait + 's...');
+        await sleep(wait * 1000);
+        continue;
+      }
+      if (!res.ok) {
+        const body = await res.text();
+        throw new Error('me/albums HTTP ' + res.status + ': ' + body.slice(0, 200));
+      }
+      const data = await res.json();
+      for (const item of (data.items || [])) {
+        const id = item?.album?.id;
+        const ext = item?.album?.external_urls?.spotify;
+        if (ext) urls.push(ext.split('?')[0]);
+        else if (id) urls.push('https://open.spotify.com/album/' + id);
+      }
+      console.log('Fetched ' + urls.length + ' albums so far...');
+      if (!data.next) break;
+      offset += limit;
+      await sleep(200);
+    }
+    return [...new Set(urls)];
+  }
+
+  console.log('Fetching ALL saved albums via your Spotify session (ignore CORS noise)...');
+  const token = await getToken();
+  const unique = await fetchAllSavedAlbumUrls(token);
   const text = unique.join('\n');
   window.__spotifyAlbumUrls = text;
-  console.log('Album URLs (' + unique.length + '):');
+  console.log('TOTAL album URLs: ' + unique.length);
   console.log(text);
 
-  const ta = document.createElement('textarea');
-  ta.value = text;
-  ta.style.position = 'fixed';
-  ta.style.top = '0';
-  ta.style.left = '0';
-  ta.style.width = '2em';
-  ta.style.height = '2em';
-  ta.style.padding = '0';
-  ta.style.border = 'none';
-  ta.style.outline = 'none';
-  ta.style.boxShadow = 'none';
-  ta.style.background = 'transparent';
-  document.body.appendChild(ta);
-  ta.focus();
-  ta.select();
-  let copied = false;
-  try {
-    copied = document.execCommand('copy');
-  } catch (_) {}
-  document.body.removeChild(ta);
-  if (!copied) {
-    try {
-      await navigator.clipboard.writeText(text);
-      copied = true;
-    } catch (_) {}
-  }
-
-  if (copied) {
-    alert('Copied ' + unique.length + ' album URLs. Paste into Spotify Downloader.');
-  } else {
-    alert('Found ' + unique.length + ' albums. Clipboard blocked.\\nIn the console run:\\ncopy(window.__spotifyAlbumUrls)\\nthen paste into the app.');
-  }
+  alert(
+    'Found ' + unique.length + ' saved albums.\\n\\n' +
+    'Clipboard is often blocked — in the console run:\\n\\n' +
+    'copy(window.__spotifyAlbumUrls)\\n\\n' +
+    'Then paste into Spotify Downloader.'
+  );
   return unique;
 })();"#;
 

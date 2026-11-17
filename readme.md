@@ -13,15 +13,25 @@ A cross-platform, asynchronous desktop application built in Rust using `eframe`/
 
 Switch modes in **Config**. Save Config applies credentials to the running session immediately (not only to `.env`).
 
-### Import Saved Albums
-On the main screen, **Import Saved Albums** logs you into Spotify in the browser, scans every album in your library, and queues all tracks for download.
+### Import Saved Albums (avoids API 429s on tracks)
 
-Requires:
-1. A [Spotify Developer app](https://developer.spotify.com/dashboard) (being logged into open.spotify.com alone is not enough)
-2. Client ID + Client Secret from that app, pasted in Config
-3. Redirect URI **exactly** `http://127.0.0.1:8888` added in the Dashboard (no `/callback`)
-4. If the app is in Development mode, add your Spotify account under Users
-5. Scope used: `user-library-read`
+Two ways:
+
+**A) Paste / browser scraper (recommended, no API track calls)**  
+1. Open https://open.spotify.com/collection/albums  
+2. In the app, open **Paste albums / browser scraper** → **Copy console scraper**  
+3. Paste the script into the browser DevTools console, scroll/wait until it copies album URLs  
+4. Paste those URLs into the app → **Import pasted albums (scrape)**  
+Tracks are expanded from public embed JSON (not the Web API).
+
+**B) Import Saved Albums button**  
+Logs in once to list `/me/albums`, then expands each album via the same embed scrape (not `album_tracks` API). Still needs Developer app credentials for the album *list* only.
+
+For B you need:
+1. A [Spotify Developer app](https://developer.spotify.com/dashboard)
+2. Client ID + Client Secret in Config
+3. Redirect URI **exactly** `http://127.0.0.1:8888`
+4. Your account added under Users if the app is in Development mode
 
 ### Folder layout
 Downloads are organized by album name:

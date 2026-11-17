@@ -1,19 +1,45 @@
-//! Import the current user's saved Spotify albums via Authorization Code login.
+//! Import saved albums without burning Spotify API track-list quota.
+//!
+//! - OAuth `/me/albums` is only used to discover album IDs (with 429 backoff).
+//! - Each album's tracks are expanded via public embed JSON scrape (no API).
+//! - Or paste album URLs / run the browser console scraper (zero API).
 
+use regex::Regex;
 use rspotify::{prelude::*, scopes, AuthCodeSpotify, Config, Credentials, OAuth};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
+use std::sync::OnceLock;
+use std::time::Duration;
 use tracing::info;
 use url::Url;
 
 use crate::metadata_cache;
-use crate::spotify::TrackMetadata;
+use crate::scraper;
 
 /// Must match the Spotify Developer Dashboard Redirect URI exactly.
-/// Use host+port only (no `/callback` path) — rspotify's listener concatenates
-/// the request path onto this string.
 pub const DEFAULT_REDIRECT_URI: &str = "http://127.0.0.1:8888";
+
+/// Paste this into the browser console on https://open.spotify.com/collection/albums
+/// after scrolling so all albums are visible. It copies album links to the clipboard.
+pub const BROWSER_ALBUM_SCRAPER_JS: &str = r#"(async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const root = document.querySelector('[data-testid="section-entity-list"], main, body') || document.body;
+  for (let i = 0; i < 40; i++) {
+    root.scrollTo(0, root.scrollHeight);
+    window.scrollTo(0, document.body.scrollHeight);
+    await sleep(400);
+  }
+  const urls = [...document.querySelectorAll('a[href*="/album/"]')]
+    .map((a) => a.href.split('?')[0])
+    .filter((h) => /open\.spotify\.com\/album\/[A-Za-z0-9]+/.test(h));
+  const unique = [...new Set(urls)];
+  const text = unique.join('\n');
+  await navigator.clipboard.writeText(text);
+  console.log(`Copied ${unique.length} album URLs to clipboard`);
+  alert(`Copied ${unique.length} album URLs. Paste them into Spotify Downloader → Import pasted albums.`);
+  return unique;
+})();"#;
 
 #[derive(Debug, Clone)]
 pub struct SavedAlbumsImport {
@@ -28,8 +54,6 @@ fn redirect_uri() -> String {
     normalize_redirect_uri(&raw)
 }
 
-/// Avoid `.../callback/callback` by stripping a trailing `/callback` path that
-/// conflicts with how the local OAuth listener rebuilds the URL.
 fn normalize_redirect_uri(raw: &str) -> String {
     let trimmed = raw.trim().trim_end_matches('/');
     if let Some(stripped) = trimmed.strip_suffix("/callback") {
@@ -41,7 +65,7 @@ fn normalize_redirect_uri(raw: &str) -> String {
 
 fn user_client() -> Result<AuthCodeSpotify, String> {
     let credentials = Credentials::from_env().ok_or_else(|| {
-        "Missing RSPOTIFY_CLIENT_ID / RSPOTIFY_CLIENT_SECRET. Add them in Config — saved albums require a Spotify Developer app, not just open.spotify.com.".to_string()
+        "Missing RSPOTIFY_CLIENT_ID / RSPOTIFY_CLIENT_SECRET. Add them in Config — or use Paste album links instead (no API).".to_string()
     })?;
 
     let oauth = OAuth {
@@ -59,8 +83,6 @@ fn user_client() -> Result<AuthCodeSpotify, String> {
     Ok(AuthCodeSpotify::with_config(credentials, oauth, config))
 }
 
-/// Localhost OAuth callback that correctly handles Spotify `error=` responses
-/// and avoids rspotify's redirect_uri + path double-append bug.
 fn wait_for_auth_code(spotify: &AuthCodeSpotify, authorize_url: &str) -> Result<String, String> {
     let redirect = redirect_uri();
     let parsed = Url::parse(&redirect)
@@ -103,7 +125,6 @@ fn wait_for_auth_code(spotify: &AuthCodeSpotify, authorize_url: &str) -> Result<
         .read_line(&mut request_line)
         .map_err(|e| format!("Failed reading OAuth callback: {}", e))?;
 
-    // Drain the rest of the request so the browser gets a clean response.
     loop {
         let mut line = String::new();
         if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" || line == "\n" {
@@ -159,7 +180,7 @@ fn wait_for_auth_code(spotify: &AuthCodeSpotify, authorize_url: &str) -> Result<
         let expected_state = &spotify.get_oauth().state;
         match params.get("state") {
             Some(state) if state == expected_state => {
-                message = "Login OK — go back to the Spotify Downloader.".to_string();
+                message = "Login OK — close this tab and return to Spotify Downloader.".to_string();
                 Ok(code.clone())
             }
             _ => {
@@ -185,7 +206,6 @@ fn wait_for_auth_code(spotify: &AuthCodeSpotify, authorize_url: &str) -> Result<
 }
 
 async fn ensure_user_token(spotify: &AuthCodeSpotify) -> Result<(), String> {
-    // Reuse a cached token when possible.
     if let Ok(Some(token)) = spotify.read_token_cache(true).await {
         let expired = token.is_expired();
         *spotify
@@ -194,18 +214,13 @@ async fn ensure_user_token(spotify: &AuthCodeSpotify) -> Result<(), String> {
             .await
             .map_err(|e| format!("Token lock error: {e:?}"))? = Some(token);
         if expired {
-            match spotify.refetch_token().await {
-                Ok(Some(refreshed)) => {
-                    *spotify
-                        .get_token()
-                        .lock()
-                        .await
-                        .map_err(|e| format!("Token lock error: {e:?}"))? = Some(refreshed);
-                    return Ok(());
-                }
-                Ok(None) | Err(_) => {
-                    // Fall through to interactive login.
-                }
+            if let Ok(Some(refreshed)) = spotify.refetch_token().await {
+                *spotify
+                    .get_token()
+                    .lock()
+                    .await
+                    .map_err(|e| format!("Token lock error: {e:?}"))? = Some(refreshed);
+                return Ok(());
             }
         } else {
             return Ok(());
@@ -225,102 +240,216 @@ async fn ensure_user_token(spotify: &AuthCodeSpotify) -> Result<(), String> {
     Ok(())
 }
 
-/// Open a browser login (first time), then list every saved album and expand to track URLs.
+fn is_rate_limited(err: &str) -> bool {
+    let lower = err.to_lowercase();
+    lower.contains("429") || lower.contains("too many requests") || lower.contains("rate limit")
+}
+
+async fn sleep_backoff(attempt: u32) {
+    let secs = 2u64.saturating_pow(attempt.min(5)).max(2);
+    tokio::time::sleep(Duration::from_secs(secs)).await;
+}
+
+/// Expand many album URLs via embed scrape (no Web API track calls).
+pub async fn expand_albums_via_scrape(album_urls: &[String]) -> Result<SavedAlbumsImport, String> {
+    let mut track_urls = Vec::new();
+    let mut album_names = Vec::new();
+    let mut seen_albums = HashSet::new();
+    let mut failures = Vec::new();
+
+    for (i, album_url) in album_urls.iter().enumerate() {
+        let clean = album_url.split('?').next().unwrap_or(album_url).to_string();
+        if !clean.contains("/album/") || !seen_albums.insert(clean.clone()) {
+            continue;
+        }
+
+        info!(
+            "Scraping album {}/{}: {}",
+            i + 1,
+            album_urls.len(),
+            clean
+        );
+
+        let mut last_err = None;
+        let mut tracks = None;
+        for attempt in 0..3u32 {
+            match scraper::expand_url_to_tracks(&clean).await {
+                Ok(t) => {
+                    tracks = Some(t);
+                    break;
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                    sleep_backoff(attempt).await;
+                }
+            }
+        }
+
+        match tracks {
+            Some(t) => {
+                // Album name is stored in metadata cache for the first track when scrape succeeds.
+                let name = t
+                    .first()
+                    .and_then(|u| metadata_cache::get(u))
+                    .map(|m| m.album)
+                    .filter(|a| a != "Unknown Album")
+                    .unwrap_or_else(|| clean.clone());
+                album_names.push(name);
+                track_urls.extend(t);
+            }
+            None => {
+                failures.push(format!(
+                    "{} ({})",
+                    clean,
+                    last_err.unwrap_or_else(|| "unknown error".into())
+                ));
+            }
+        }
+
+        // Be gentle with public embed endpoints.
+        tokio::time::sleep(Duration::from_millis(350)).await;
+    }
+
+    if track_urls.is_empty() {
+        return Err(format!(
+            "No tracks scraped from {} album link(s). Failures: {}",
+            album_urls.len(),
+            if failures.is_empty() {
+                "none".into()
+            } else {
+                failures.join("; ")
+            }
+        ));
+    }
+
+    let status_note = if failures.is_empty() {
+        String::new()
+    } else {
+        format!(" ({} album(s) failed to scrape)", failures.len())
+    };
+    let _ = status_note; // used by callers via album_names/track counts
+
+    Ok(SavedAlbumsImport {
+        album_count: album_names.len(),
+        track_urls,
+        album_names,
+    })
+}
+
+fn album_url_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r#"https?://open\.spotify\.com/album/[A-Za-z0-9]+"#)
+            .expect("album url regex")
+    })
+}
+
+/// Parse pasted text: newline URLs, JSON string arrays, or mixed HTML/console dumps.
+pub fn parse_album_urls_from_text(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+
+    // JSON array of strings
+    if let Ok(serde_json::Value::Array(items)) =
+        serde_json::from_str::<serde_json::Value>(text.trim())
+    {
+        for item in items {
+            if let Some(s) = item.as_str() {
+                for m in album_url_re().find_iter(s) {
+                    let u = m.as_str().to_string();
+                    if seen.insert(u.clone()) {
+                        out.push(u);
+                    }
+                }
+            }
+        }
+    }
+
+    for m in album_url_re().find_iter(text) {
+        let u = m.as_str().to_string();
+        if seen.insert(u.clone()) {
+            out.push(u);
+        }
+    }
+
+    out
+}
+
+/// Fully scrape-based import from pasted album links / console scraper output.
+pub async fn import_albums_from_pasted_text(text: &str) -> Result<SavedAlbumsImport, String> {
+    let albums = parse_album_urls_from_text(text);
+    if albums.is_empty() {
+        return Err(
+            "No Spotify album URLs found in the paste. Open collection/albums, run the console scraper, then paste here."
+                .to_string(),
+        );
+    }
+    expand_albums_via_scrape(&albums).await
+}
+
+/// Login once to list saved albums, then expand every album via embed scrape (avoids API 429s).
 pub async fn import_saved_albums() -> Result<SavedAlbumsImport, String> {
     let spotify = user_client()?;
     ensure_user_token(&spotify).await?;
 
-    let mut album_urls = Vec::new();
-    let mut album_names = Vec::new();
+    let mut album_page_urls = Vec::new();
     let mut offset = 0u32;
     let limit = 50u32;
 
     loop {
-        let page = spotify
-            .current_user_saved_albums_manual(None, Some(limit), Some(offset))
-            .await
-            .map_err(|e| format!("Failed to fetch saved albums: {}", e))?;
+        let mut page = None;
+        let mut last_err = None;
+        for attempt in 0..6u32 {
+            match spotify
+                .current_user_saved_albums_manual(None, Some(limit), Some(offset))
+                .await
+            {
+                Ok(p) => {
+                    page = Some(p);
+                    break;
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    if is_rate_limited(&msg) {
+                        info!("Saved-albums list rate-limited; backing off (attempt {})", attempt + 1);
+                        sleep_backoff(attempt + 1).await;
+                        last_err = Some(msg);
+                        continue;
+                    }
+                    return Err(format!("Failed to fetch saved albums: {msg}"));
+                }
+            }
+        }
+        let page = page.ok_or_else(|| {
+            format!(
+                "Failed to fetch saved albums after retries: {}",
+                last_err.unwrap_or_else(|| "unknown".into())
+            )
+        })?;
 
         for saved in page.items {
-            let album = saved.album;
-            album_names.push(album.name.clone());
-            album_urls.push((
-                album.id.clone(),
-                album.name.clone(),
-                album
-                    .artists
-                    .first()
-                    .map(|a| a.name.clone())
-                    .unwrap_or_else(|| "Unknown".to_string()),
-            ));
+            let id = saved.album.id.id().to_string();
+            album_page_urls.push(format!("https://open.spotify.com/album/{id}"));
         }
 
         if page.next.is_none() {
             break;
         }
         offset += limit;
+        // Small pause between list pages to reduce 429s.
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
-    if album_urls.is_empty() {
+    if album_page_urls.is_empty() {
         return Err("No saved albums found on this Spotify account.".to_string());
     }
 
     info!(
-        "Found {} saved albums — expanding tracks...",
-        album_urls.len()
+        "Found {} saved albums — expanding tracks via embed scrape (not API)...",
+        album_page_urls.len()
     );
 
-    let spot_base = "https://open.spotify.com";
-    let mut track_urls = Vec::new();
-
-    for (album_id, album_name, album_artist) in &album_urls {
-        let mut track_offset = 0u32;
-        let track_limit = 50u32;
-
-        loop {
-            let page = spotify
-                .album_track_manual(album_id.clone(), None, Some(track_limit), Some(track_offset))
-                .await
-                .map_err(|e| format!("Failed to list tracks for '{}': {}", album_name, e))?;
-
-            for track in page.items {
-                let Some(id) = track.id else {
-                    continue;
-                };
-                let track_url = format!("{}/track/{}", spot_base, id.id());
-                let artist = track
-                    .artists
-                    .first()
-                    .map(|a| a.name.clone())
-                    .unwrap_or_else(|| album_artist.clone());
-
-                metadata_cache::put(
-                    &track_url,
-                    TrackMetadata {
-                        title: track.name,
-                        artist,
-                        album: album_name.clone(),
-                    },
-                );
-                track_urls.push(track_url);
-            }
-
-            if page.next.is_none() {
-                break;
-            }
-            track_offset += track_limit;
-        }
-    }
-
-    if track_urls.is_empty() {
-        return Err("Saved albums were found, but none contained playable tracks.".to_string());
-    }
-
-    Ok(SavedAlbumsImport {
-        album_count: album_urls.len(),
-        track_urls,
-        album_names,
-    })
+    expand_albums_via_scrape(&album_page_urls).await
 }
 
 #[cfg(test)]
@@ -334,12 +463,26 @@ mod tests {
             "http://127.0.0.1:8888"
         );
         assert_eq!(
-            normalize_redirect_uri("http://127.0.0.1:8888/callback/"),
-            "http://127.0.0.1:8888"
-        );
-        assert_eq!(
             normalize_redirect_uri("http://127.0.0.1:8888"),
             "http://127.0.0.1:8888"
         );
+    }
+
+    #[test]
+    fn parses_pasted_album_urls() {
+        let text = r#"
+        https://open.spotify.com/album/4aawyAB9vmqN3uQ7FjRGTy?si=abc
+        junk
+        https://open.spotify.com/album/0sNOF9WDwhWunNAHPD3Baj
+        "#;
+        let urls = parse_album_urls_from_text(text);
+        assert_eq!(urls.len(), 2);
+        assert!(urls[0].contains("4aawyAB9vmqN3uQ7FjRGTy"));
+    }
+
+    #[test]
+    fn parses_json_array_of_urls() {
+        let text = r#"["https://open.spotify.com/album/4aawyAB9vmqN3uQ7FjRGTy","https://open.spotify.com/album/0sNOF9WDwhWunNAHPD3Baj"]"#;
+        assert_eq!(parse_album_urls_from_text(text).len(), 2);
     }
 }

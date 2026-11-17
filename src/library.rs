@@ -43,17 +43,21 @@ pub const BROWSER_ALBUM_SCRAPER_JS: &str = r#"(async () => {
     const urls = [];
     let offset = 0;
     const limit = 50;
+    let strikes = 0;
     for (;;) {
       const res = await fetch(
         'https://api.spotify.com/v1/me/albums?limit=' + limit + '&offset=' + offset,
         { headers: { Authorization: 'Bearer ' + token } }
       );
       if (res.status === 429) {
-        const wait = Number(res.headers.get('Retry-After') || '5');
-        console.warn('Rate limited listing albums, waiting ' + wait + 's...');
+        strikes++;
+        const wait = Math.max(Number(res.headers.get('Retry-After') || '30'), 15) + 5;
+        console.warn('Rate limited (strike ' + strikes + '/4). WAIT ' + wait + 's — do not re-run the script.');
+        if (strikes >= 4) throw new Error('Too many 429s on me/albums');
         await sleep(wait * 1000);
         continue;
       }
+      strikes = 0;
       if (!res.ok) throw new Error('me/albums HTTP ' + res.status);
       const data = await res.json();
       for (const item of (data.items || [])) {
@@ -65,7 +69,8 @@ pub const BROWSER_ALBUM_SCRAPER_JS: &str = r#"(async () => {
       console.log('API albums so far: ' + urls.length);
       if (!data.next) break;
       offset += limit;
-      await sleep(250);
+      // Go slow so Spotify does not 429 mid-library.
+      await sleep(1500);
     }
     return [...new Set(urls)];
   }

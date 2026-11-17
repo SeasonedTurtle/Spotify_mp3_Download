@@ -4,6 +4,8 @@ use dotenvy::dotenv;
 use eframe::egui;
 
 mod downloader;
+mod library;
+mod metadata_cache;
 mod scraper;
 mod spotify;
 mod ui;

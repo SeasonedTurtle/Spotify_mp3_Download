@@ -8,18 +8,37 @@ A cross-platform, asynchronous desktop application built in Rust using `eframe`/
 
 | Mode | Needs API keys? | Notes |
 |------|-----------------|-------|
-| **Web Scrape (JSON)** (default) | No | Reads Spotify's public embed `__NEXT_DATA__` / oEmbed JSON. Avoids Developer API rate limits. Large playlists may be truncated by the embed (~100 tracks). |
-| **Spotify API** | Yes (`Client ID` / `Client Secret`) | Official Web API with full playlist/album pagination. Spotify Premium + Developer Dashboard required. |
+| **Web Scrape (JSON)** (default) | No (for normal links) | Reads Spotify's public embed `__NEXT_DATA__` / oEmbed JSON. Avoids Developer API rate limits. Large playlists may be truncated by the embed (~100 tracks). |
+| **Spotify API** | Yes (`Client ID` / `Client Secret`) | Official Web API with full playlist/album pagination. |
 
 Switch modes in **Config**. Save Config applies credentials to the running session immediately (not only to `.env`).
+
+### Import Saved Albums
+On the main screen, **Import Saved Albums** logs you into Spotify in the browser, scans every album in your library, and queues all tracks for download.
+
+Requires:
+1. Client ID + Client Secret in Config
+2. Redirect URI `http://127.0.0.1:8888/callback` added in the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard) for your app
+3. Scope used: `user-library-read`
+
+### Folder layout
+Downloads are organized by album name:
+
+```text
+DOWNLOAD_DIR/
+  Global Warming/
+    Pitbull - Feel This Moment.mp3
+  After Hours/
+    The Weeknd - Blinding Lights.mp3
+```
 
 ---
 
 ## Prerequisites
 
 - **yt-dlp** must be installed and available on your `PATH`
-- **No VPN** while authenticating against Spotify services (API mode especially)
-- API mode only: Spotify Premium + [Developer Dashboard](https://developer.spotify.com/dashboard) credentials
+- **No VPN** while authenticating against Spotify services (API / saved-albums login especially)
+- Saved albums / API mode: Spotify Premium + [Developer Dashboard](https://developer.spotify.com/dashboard) credentials
 
 ---
 
@@ -96,6 +115,7 @@ METADATA_SOURCE=scrape
 DOWNLOAD_DIR=downloads
 RSPOTIFY_CLIENT_ID=
 RSPOTIFY_CLIENT_SECRET=
+RSPOTIFY_REDIRECT_URI=http://127.0.0.1:8888/callback
 ```
 
 `METADATA_SOURCE` may be `scrape` (default) or `api`.
@@ -105,7 +125,8 @@ RSPOTIFY_CLIENT_SECRET=
 ## Reliability notes
 
 - Spotify API clients are cached (one token) instead of re-authing per track
-- Album track lists are paginated in API mode
+- User OAuth token for saved albums is cached locally (`.spotify_token_cache.json`)
+- Album track lists are paginated in API / saved-albums mode
 - Existing MP3s are skipped; failed yt-dlp downloads retry up to 3 times
 - Filenames are sanitized for Windows/Linux illegal characters
 - Duplicate track URLs are ignored when loading

@@ -1,3 +1,4 @@
+use crate::library;
 use crate::spotify::{self, MetadataSource};
 use crate::ui::DownloaderApp;
 use eframe::egui;
@@ -11,11 +12,9 @@ impl DownloaderApp {
         unsafe {
             std::env::set_var("RSPOTIFY_CLIENT_ID", &self.spotify_client_id);
             std::env::set_var("RSPOTIFY_CLIENT_SECRET", &self.spotify_client_secret);
+            std::env::set_var("RSPOTIFY_REDIRECT_URI", &self.redirect_uri);
             std::env::set_var("DOWNLOAD_DIR", &self.download_dir);
-            std::env::set_var(
-                "METADATA_SOURCE",
-                self.metadata_source.as_env_value(),
-            );
+            std::env::set_var("METADATA_SOURCE", self.metadata_source.as_env_value());
         }
     }
 
@@ -39,10 +38,10 @@ impl DownloaderApp {
         ui.label(
             egui::RichText::new(match self.metadata_source {
                 MetadataSource::Scrape => {
-                    "Uses Spotify's public embed/oEmbed JSON — no Client ID, Secret, or API rate limits. Large playlists may be truncated by the embed (~100 tracks)."
+                    "Uses Spotify's public embed/oEmbed JSON — no keys for normal links. Large playlists may be truncated (~100 tracks)."
                 }
                 MetadataSource::Api => {
-                    "Uses the official Spotify Web API. Requires Client ID/Secret from the Spotify Developer Dashboard (Premium)."
+                    "Uses the official Spotify Web API for links. Requires Client ID/Secret."
                 }
             })
             .small()
@@ -50,17 +49,34 @@ impl DownloaderApp {
         );
 
         ui.add_space(12.0);
-
-        ui.add_enabled_ui(self.metadata_source == MetadataSource::Api, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Spotify Client ID:");
-                ui.text_edit_singleline(&mut self.spotify_client_id);
-            });
-            ui.horizontal(|ui| {
-                ui.label("Spotify Secret:  ");
-                ui.text_edit_singleline(&mut self.spotify_client_secret);
-            });
+        ui.label("Spotify app credentials");
+        ui.label(
+            egui::RichText::new(
+                "Required for API mode and for Import Saved Albums (browser login).",
+            )
+            .small()
+            .weak(),
+        );
+        ui.horizontal(|ui| {
+            ui.label("Client ID:");
+            ui.text_edit_singleline(&mut self.spotify_client_id);
         });
+        ui.horizontal(|ui| {
+            ui.label("Client Secret:");
+            ui.text_edit_singleline(&mut self.spotify_client_secret);
+        });
+        ui.horizontal(|ui| {
+            ui.label("Redirect URI:");
+            ui.text_edit_singleline(&mut self.redirect_uri);
+        });
+        ui.label(
+            egui::RichText::new(format!(
+                "Add this exact Redirect URI in the Spotify Developer Dashboard. Default: {}",
+                library::DEFAULT_REDIRECT_URI
+            ))
+            .small()
+            .weak(),
+        );
 
         ui.add_space(10.0);
 
@@ -73,11 +89,17 @@ impl DownloaderApp {
                     }
                 }
                 ui.add(
-                    egui::TextEdit::singleline(&mut self.download_dir)
-                        .desired_width(f32::INFINITY),
+                    egui::TextEdit::singleline(&mut self.download_dir).desired_width(f32::INFINITY),
                 );
             });
         });
+        ui.label(
+            egui::RichText::new(
+                "Files save as: DOWNLOAD_DIR/<Album Name>/<Artist> - <Title>.mp3",
+            )
+            .small()
+            .weak(),
+        );
 
         ui.add_space(20.0);
 
@@ -89,9 +111,10 @@ impl DownloaderApp {
                 });
 
                 let env_content = format!(
-                    "RSPOTIFY_CLIENT_ID={}\nRSPOTIFY_CLIENT_SECRET={}\nDOWNLOAD_DIR={}\nMETADATA_SOURCE={}\n",
+                    "RSPOTIFY_CLIENT_ID={}\nRSPOTIFY_CLIENT_SECRET={}\nRSPOTIFY_REDIRECT_URI={}\nDOWNLOAD_DIR={}\nMETADATA_SOURCE={}\n",
                     self.spotify_client_id,
                     self.spotify_client_secret,
+                    self.redirect_uri,
                     self.download_dir,
                     self.metadata_source.as_env_value(),
                 );
@@ -132,9 +155,7 @@ impl DownloaderApp {
         });
 
         ui.add_space(5.0);
-        ui.label(
-            egui::RichText::new(&self.connection_status).color(egui::Color32::LIGHT_BLUE),
-        );
+        ui.label(egui::RichText::new(&self.connection_status).color(egui::Color32::LIGHT_BLUE));
 
         ui.add_space(20.0);
         if ui.button("Back to Downloader").clicked() {

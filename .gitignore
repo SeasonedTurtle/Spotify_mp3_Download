@@ -4,6 +4,10 @@
 # Ignore your secret API keys
 .env
 
+# Cached Spotify user OAuth token (saved albums login)
+.spotify_token_cache.json
+*.spotify_token_cache.json
+
 # Ignore your private text files and downloads
 urls.txt
 /downloaded tracks/

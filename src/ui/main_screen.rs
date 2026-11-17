@@ -12,11 +12,7 @@ impl DownloaderApp {
         ui.horizontal(|ui| {
             ui.label("Metadata:");
             ui.strong(self.metadata_source.label());
-            ui.label(
-                egui::RichText::new("(change in Config)")
-                    .small()
-                    .weak(),
-            );
+            ui.label(egui::RichText::new("(change in Config)").small().weak());
         });
 
         ui.add_space(8.0);
@@ -48,8 +44,14 @@ impl DownloaderApp {
                     let source = self.metadata_source;
 
                     self.rt.spawn(async move {
-                        let result =
-                            crate::spotify::expand_url_to_tracks(&url_to_load, source).await;
+                        let result = crate::spotify::expand_url_to_tracks(&url_to_load, source)
+                            .await
+                            .map(|tracks| {
+                                (
+                                    tracks,
+                                    "✅ Link expanded.".to_string(),
+                                )
+                            });
                         let _ = tx.send(result);
                         ctx.request_repaint();
                     });
@@ -63,11 +65,72 @@ impl DownloaderApp {
             });
         });
 
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            let can_import = !self.is_loading
+                && !self.spotify_client_id.trim().is_empty()
+                && !self.spotify_client_secret.trim().is_empty();
+            if ui
+                .add_enabled(
+                    can_import,
+                    egui::Button::new("Import Saved Albums"),
+                )
+                .on_hover_text(
+                    "Logs into Spotify in your browser, scans your saved albums, and queues every track. Requires Client ID/Secret + redirect URI in Config.",
+                )
+                .clicked()
+            {
+                self.apply_env_from_fields();
+                self.is_loading = true;
+                self.load_status =
+                    "Opening browser for Spotify login, then scanning saved albums..."
+                        .to_string();
+
+                let (tx, rx) = channel();
+                self.load_rx = Some(rx);
+                let ctx = ui.ctx().clone();
+
+                self.rt.spawn(async move {
+                    let result = match crate::library::import_saved_albums().await {
+                        Ok(imported) => {
+                            let preview = if imported.album_names.len() <= 5 {
+                                imported.album_names.join(", ")
+                            } else {
+                                format!(
+                                    "{}, … (+{} more)",
+                                    imported.album_names[..5].join(", "),
+                                    imported.album_names.len() - 5
+                                )
+                            };
+                            Ok((
+                                imported.track_urls,
+                                format!(
+                                    "✅ Imported {} saved album(s) [{}].",
+                                    imported.album_count, preview
+                                ),
+                            ))
+                        }
+                        Err(e) => Err(e),
+                    };
+                    let _ = tx.send(result);
+                    ctx.request_repaint();
+                });
+            }
+
+            if self.spotify_client_id.trim().is_empty()
+                || self.spotify_client_secret.trim().is_empty()
+            {
+                ui.label(
+                    egui::RichText::new("Set Client ID/Secret in Config to import saved albums.")
+                        .small()
+                        .weak(),
+                );
+            }
+        });
+
         if !self.load_status.is_empty() {
             ui.add_space(5.0);
-            ui.label(
-                egui::RichText::new(&self.load_status).color(egui::Color32::LIGHT_BLUE),
-            );
+            ui.label(egui::RichText::new(&self.load_status).color(egui::Color32::LIGHT_BLUE));
         }
 
         ui.add_space(16.0);
@@ -88,8 +151,7 @@ impl DownloaderApp {
                             self.is_downloading = false;
                         }
 
-                        let can_download =
-                            !self.loaded_links.is_empty() && !self.is_downloading;
+                        let can_download = !self.loaded_links.is_empty() && !self.is_downloading;
                         if ui
                             .add_enabled(can_download, egui::Button::new("Download All"))
                             .clicked()
@@ -136,7 +198,8 @@ impl DownloaderApp {
                                         )
                                         .await;
 
-                                        let done = completed_clone.fetch_add(1, Ordering::Relaxed) + 1;
+                                        let done =
+                                            completed_clone.fetch_add(1, Ordering::Relaxed) + 1;
                                         match result {
                                             Ok(msg) => {
                                                 let _ = tx_clone.send(format!("✅ {}", msg));
@@ -195,15 +258,12 @@ impl DownloaderApp {
                 ui.horizontal(|ui| {
                     ui.heading("Downloaded Songs");
                     if !self.download_status.is_empty() {
-                        ui.with_layout(
-                            egui::Layout::right_to_left(egui::Align::Center),
-                            |ui| {
-                                ui.label(
-                                    egui::RichText::new(&self.download_status)
-                                        .color(egui::Color32::LIGHT_GREEN),
-                                );
-                            },
-                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(
+                                egui::RichText::new(&self.download_status)
+                                    .color(egui::Color32::LIGHT_GREEN),
+                            );
+                        });
                     }
                 });
                 ui.separator();

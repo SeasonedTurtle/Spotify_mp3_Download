@@ -6,6 +6,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::info;
 
+use crate::metadata_cache;
 use crate::scraper;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +92,11 @@ pub async fn get_track_metadata(
     spotify_url: &str,
     source: MetadataSource,
 ) -> Result<TrackMetadata, String> {
+    let clean = spotify_url.split('?').next().unwrap_or(spotify_url);
+    if let Some(cached) = metadata_cache::get(clean) {
+        return Ok(cached);
+    }
+
     match source {
         MetadataSource::Scrape => scraper::get_track_metadata(spotify_url).await,
         MetadataSource::Api => get_track_metadata_api(spotify_url).await,
@@ -108,7 +114,7 @@ async fn get_track_metadata_api(spotify_url: &str) -> Result<TrackMetadata, Stri
         .await
         .map_err(|e| format!("Failed to fetch track: {}", e))?;
 
-    Ok(TrackMetadata {
+    let meta = TrackMetadata {
         title: track.name,
         artist: track
             .artists
@@ -116,7 +122,9 @@ async fn get_track_metadata_api(spotify_url: &str) -> Result<TrackMetadata, Stri
             .map(|a| a.name.clone())
             .unwrap_or_else(|| "Unknown".into()),
         album: track.album.name,
-    })
+    };
+    metadata_cache::put(spotify_url, meta.clone());
+    Ok(meta)
 }
 
 pub async fn expand_url_to_tracks(
@@ -176,6 +184,18 @@ async fn expand_url_to_tracks_api(url: &str) -> Result<Vec<String>, String> {
         let id_str = parse_spotify_id(url, "album")?;
         let album_id = AlbumId::from_id(&id_str).map_err(|_| "Invalid Album ID".to_string())?;
 
+        // Fetch album name once so downloads land in a properly named folder.
+        let album = spotify
+            .album(album_id.clone(), None)
+            .await
+            .map_err(|e| format!("Album error: {}", e))?;
+        let album_name = album.name.clone();
+        let album_artist = album
+            .artists
+            .first()
+            .map(|a| a.name.clone())
+            .unwrap_or_else(|| "Unknown".to_string());
+
         // Paginate album tracks — large albums exceed a single page.
         let mut offset = 0;
         let limit = 50;
@@ -187,7 +207,21 @@ async fn expand_url_to_tracks_api(url: &str) -> Result<Vec<String>, String> {
 
             for track in page.items {
                 if let Some(id) = track.id {
-                    track_urls.push(format!("{}/track/{}", spot_base, id.id()));
+                    let track_url = format!("{}/track/{}", spot_base, id.id());
+                    let artist = track
+                        .artists
+                        .first()
+                        .map(|a| a.name.clone())
+                        .unwrap_or_else(|| album_artist.clone());
+                    metadata_cache::put(
+                        &track_url,
+                        TrackMetadata {
+                            title: track.name,
+                            artist,
+                            album: album_name.clone(),
+                        },
+                    );
+                    track_urls.push(track_url);
                 }
             }
             if page.next.is_none() {

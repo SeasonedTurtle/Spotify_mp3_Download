@@ -4,7 +4,7 @@ use tracing::info;
 use crate::spotify::MetadataSource;
 
 /// Characters that are illegal or awkward in Windows/Linux filenames.
-fn sanitize_filename(input: &str) -> String {
+pub fn sanitize_filename(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     for ch in input.chars() {
         match ch {
@@ -22,9 +22,9 @@ fn sanitize_filename(input: &str) -> String {
     }
 }
 
+/// Layout: `DOWNLOAD_DIR/<Album Name>/<Artist> - <Title>.mp3`
 fn final_mp3_path(output_folder: &str, artist: &str, album: &str, title: &str) -> PathBuf {
     Path::new(output_folder)
-        .join(sanitize_filename(artist))
         .join(sanitize_filename(album))
         .join(format!(
             "{} - {}.mp3",
@@ -58,8 +58,8 @@ pub async fn download_from_spotify(
     let search_query = format!("ytsearch1:{} {} audio", metadata.title, metadata.artist);
 
     info!(
-        "Downloading '{}' by '{}' via yt-dlp...",
-        metadata.title, metadata.artist
+        "Downloading '{}' by '{}' into album folder '{}'...",
+        metadata.title, metadata.artist, metadata.album
     );
 
     // A couple of retries helps with transient yt-dlp / network blips.
@@ -68,7 +68,8 @@ pub async fn download_from_spotify(
         match crate::youtube::download_to_mp3(&search_query, &output_stem).await {
             Ok(()) => {
                 let msg = format!(
-                    "{} - {} → {}",
+                    "[{}] {} - {} → {}",
+                    metadata.album,
                     metadata.artist,
                     metadata.title,
                     final_file.display()
@@ -88,4 +89,24 @@ pub async fn download_from_spotify(
         "Failed after retries for '{} - {}': {}",
         metadata.artist, metadata.title, last_err
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn album_folder_layout() {
+        let path = final_mp3_path("downloads", "Pitbull", "Global Warming", "Feel This Moment");
+        assert_eq!(
+            path,
+            PathBuf::from("downloads/Global Warming/Pitbull - Feel This Moment.mp3")
+        );
+    }
+
+    #[test]
+    fn sanitizes_illegal_album_chars() {
+        let path = final_mp3_path("out", "A", "Foo:Bar/Baz", "T");
+        assert_eq!(path, PathBuf::from("out/Foo_Bar_Baz/A - T.mp3"));
+    }
 }

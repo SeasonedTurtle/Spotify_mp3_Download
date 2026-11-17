@@ -4,10 +4,10 @@
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 use tracing::info;
 
+use crate::metadata_cache;
 use crate::spotify::TrackMetadata;
 
 const USER_AGENT: &str =
@@ -54,25 +54,6 @@ fn next_data_re() -> &'static Regex {
         Regex::new(r#"(?s)<script id="__NEXT_DATA__"[^>]*>(.*?)</script>"#)
             .expect("invalid __NEXT_DATA__ regex")
     })
-}
-
-/// Cache filled when expanding albums/playlists so downloads skip a second embed fetch.
-fn metadata_cache() -> &'static Mutex<HashMap<String, TrackMetadata>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, TrackMetadata>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn cache_put(track_url: &str, meta: TrackMetadata) {
-    if let Ok(mut guard) = metadata_cache().lock() {
-        guard.insert(track_url.to_string(), meta);
-    }
-}
-
-fn cache_get(track_url: &str) -> Option<TrackMetadata> {
-    metadata_cache()
-        .lock()
-        .ok()
-        .and_then(|guard| guard.get(track_url).cloned())
 }
 
 fn parse_spotify_id(url: &str, kind: &str) -> Result<String, String> {
@@ -162,7 +143,7 @@ fn artists_from_entity(entity: &EmbedTrackEntity) -> String {
 /// Fetch track title/artist from the public embed JSON (no API keys).
 pub async fn get_track_metadata(spotify_url: &str) -> Result<TrackMetadata, String> {
     let clean_url = spotify_url.split('?').next().unwrap_or(spotify_url);
-    if let Some(cached) = cache_get(clean_url) {
+    if let Some(cached) = metadata_cache::get(clean_url) {
         return Ok(cached);
     }
 
@@ -187,7 +168,7 @@ pub async fn get_track_metadata(spotify_url: &str) -> Result<TrackMetadata, Stri
         // Standalone track embeds do not include album name.
         album: "Unknown Album".to_string(),
     };
-    cache_put(clean_url, meta.clone());
+    metadata_cache::put(clean_url, meta.clone());
     Ok(meta)
 }
 
@@ -266,7 +247,7 @@ pub async fn expand_url_to_tracks(url: &str) -> Result<Vec<String>, String> {
             "Unknown Album".to_string()
         };
 
-        cache_put(
+        metadata_cache::put(
             &track_url,
             TrackMetadata {
                 title,

@@ -6,17 +6,21 @@ use eframe::egui;
 use std::env;
 use std::sync::mpsc::Receiver;
 
+/// Ok((track_urls, status_message))
+type LoadOutcome = Result<(Vec<String>, String), String>;
+
 pub struct DownloaderApp {
     pub(crate) input_link: String,
     pub(crate) show_config: bool,
     pub(crate) spotify_client_id: String,
     pub(crate) spotify_client_secret: String,
+    pub(crate) redirect_uri: String,
     pub(crate) download_dir: String,
     pub(crate) metadata_source: MetadataSource,
     pub(crate) connection_status: String,
     pub(crate) conn_rx: Option<Receiver<String>>,
     pub(crate) loaded_links: Vec<String>,
-    pub(crate) load_rx: Option<Receiver<Result<Vec<String>, String>>>,
+    pub(crate) load_rx: Option<Receiver<LoadOutcome>>,
     pub(crate) load_status: String,
     pub(crate) downloaded_songs: Vec<String>,
     pub(crate) download_rx: Option<Receiver<String>>,
@@ -32,6 +36,8 @@ impl Default for DownloaderApp {
         let id = env::var("RSPOTIFY_CLIENT_ID").unwrap_or_default();
         let secret = env::var("RSPOTIFY_CLIENT_SECRET").unwrap_or_default();
         let dir = env::var("DOWNLOAD_DIR").unwrap_or_else(|_| "downloads".to_string());
+        let redirect_uri = env::var("RSPOTIFY_REDIRECT_URI")
+            .unwrap_or_else(|_| crate::library::DEFAULT_REDIRECT_URI.to_string());
         let metadata_source = MetadataSource::from_env();
 
         Self {
@@ -39,6 +45,7 @@ impl Default for DownloaderApp {
             show_config: false,
             spotify_client_id: id,
             spotify_client_secret: secret,
+            redirect_uri,
             download_dir: dir,
             metadata_source,
             connection_status: String::from("Ready to check."),
@@ -69,7 +76,7 @@ impl eframe::App for DownloaderApp {
             if let Ok(result) = rx.try_recv() {
                 self.is_loading = false;
                 match result {
-                    Ok(tracks) => {
+                    Ok((tracks, status)) => {
                         let before = self.loaded_links.len();
                         for track in tracks {
                             if !self.loaded_links.contains(&track) {
@@ -78,7 +85,8 @@ impl eframe::App for DownloaderApp {
                         }
                         let added = self.loaded_links.len().saturating_sub(before);
                         self.load_status = format!(
-                            "✅ Added {} track(s). Queue now has {}.",
+                            "{} Added {} track(s). Queue now has {}.",
+                            status,
                             added,
                             self.loaded_links.len()
                         );

@@ -25,6 +25,8 @@ pub struct DownloaderApp {
     pub(crate) downloaded_songs: Vec<String>,
     pub(crate) download_rx: Option<Receiver<String>>,
     pub(crate) download_status: String,
+    pub(crate) yt_dlp_status: String,
+    pub(crate) ytdlp_rx: Option<Receiver<String>>,
     pub(crate) is_loading: bool,
     pub(crate) is_downloading: bool,
     pub(crate) rt: tokio::runtime::Runtime,
@@ -56,6 +58,8 @@ impl Default for DownloaderApp {
             downloaded_songs: Vec::new(),
             download_rx: None,
             download_status: String::new(),
+            yt_dlp_status: String::from("Click Check yt-dlp to verify the downloader."),
+            ytdlp_rx: None,
             is_loading: false,
             is_downloading: false,
             rt: tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime"),
@@ -69,6 +73,13 @@ impl eframe::App for DownloaderApp {
             if let Ok(msg) = rx.try_recv() {
                 self.connection_status = msg;
                 self.conn_rx = None;
+            }
+        }
+
+        if let Some(rx) = &self.ytdlp_rx {
+            if let Ok(msg) = rx.try_recv() {
+                self.yt_dlp_status = msg;
+                self.ytdlp_rx = None;
             }
         }
 
@@ -114,7 +125,11 @@ impl eframe::App for DownloaderApp {
             }
         }
 
-        if self.is_loading || self.is_downloading || self.conn_rx.is_some() {
+        if self.is_loading
+            || self.is_downloading
+            || self.conn_rx.is_some()
+            || self.ytdlp_rx.is_some()
+        {
             ctx.request_repaint_after(std::time::Duration::from_millis(200));
         }
     }

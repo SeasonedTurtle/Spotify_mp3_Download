@@ -36,7 +36,8 @@ DOWNLOAD_DIR/
 
 ## Prerequisites
 
-- **yt-dlp** must be installed and available on your `PATH`
+- **yt-dlp** on your `PATH`, or placed next to the app binary (portable). Use **Config → Update yt-dlp** to self-update (`yt-dlp -U`).
+- **ffmpeg** on `PATH` (required for MP3 conversion)
 - **No VPN** while authenticating against Spotify services (API / saved-albums login especially)
 - Saved albums / API mode: Spotify Premium + [Developer Dashboard](https://developer.spotify.com/dashboard) credentials
 
@@ -86,7 +87,7 @@ sudo apt install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
   libxkbcommon-dev libssl-dev pkg-config
 ```
 
-Also install [yt-dlp](https://github.com/yt-dlp/yt-dlp).
+Also install [yt-dlp](https://github.com/yt-dlp/yt-dlp) and [ffmpeg](https://ffmpeg.org/).
 
 ### 3. Dev run
 ```bash

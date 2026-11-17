@@ -157,6 +157,64 @@ impl DownloaderApp {
         ui.add_space(5.0);
         ui.label(egui::RichText::new(&self.connection_status).color(egui::Color32::LIGHT_BLUE));
 
+        ui.add_space(16.0);
+        ui.separator();
+        ui.add_space(8.0);
+        ui.heading("yt-dlp (audio engine)");
+        ui.label(
+            egui::RichText::new(
+                "Looks for yt-dlp on PATH or next to this app. Keep it updated so YouTube downloads keep working. ffmpeg is required for MP3 conversion.",
+            )
+            .small()
+            .weak(),
+        );
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            if ui.button("Check yt-dlp").clicked() {
+                self.yt_dlp_status = "Checking yt-dlp...".to_string();
+                let (tx, rx) = channel();
+                self.ytdlp_rx = Some(rx);
+                let ctx = ui.ctx().clone();
+                self.rt.spawn(async move {
+                    let msg = match crate::youtube::check_yt_dlp().await {
+                        Ok(status) => {
+                            let ffmpeg = if status.ffmpeg_ok {
+                                "ffmpeg OK"
+                            } else {
+                                "⚠️ ffmpeg MISSING"
+                            };
+                            format!(
+                                "✅ yt-dlp {} at {}\n{}",
+                                status.version,
+                                status.path.display(),
+                                ffmpeg
+                            )
+                        }
+                        Err(e) => format!("❌ {}", e),
+                    };
+                    let _ = tx.send(msg);
+                    ctx.request_repaint();
+                });
+            }
+
+            if ui.button("Update yt-dlp").clicked() {
+                self.yt_dlp_status = "Updating yt-dlp (yt-dlp -U)...".to_string();
+                let (tx, rx) = channel();
+                self.ytdlp_rx = Some(rx);
+                let ctx = ui.ctx().clone();
+                self.rt.spawn(async move {
+                    let msg = match crate::youtube::update_yt_dlp().await {
+                        Ok(ok) => ok,
+                        Err(e) => format!("❌ {}", e),
+                    };
+                    let _ = tx.send(msg);
+                    ctx.request_repaint();
+                });
+            }
+        });
+        ui.add_space(5.0);
+        ui.label(egui::RichText::new(&self.yt_dlp_status).color(egui::Color32::LIGHT_BLUE));
+
         ui.add_space(20.0);
         if ui.button("Back to Downloader").clicked() {
             self.show_config = false;

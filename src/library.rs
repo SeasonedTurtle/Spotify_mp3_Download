@@ -20,20 +20,23 @@ use crate::scraper;
 /// Must match the Spotify Developer Dashboard Redirect URI exactly.
 pub const DEFAULT_REDIRECT_URI: &str = "http://127.0.0.1:8888";
 
-/// Paste on https://open.spotify.com (logged in). Uses the page session token to fetch
-/// ALL saved albums via /me/albums (not just the ~30 visible in the DOM).
+/// Paste on https://open.spotify.com/collection/albums (logged in).
+/// Tries to snag the live Bearer token from Spotify's own requests, then pages
+/// /me/albums for the FULL library. Falls back to deep DOM scrolling if needed.
 pub const BROWSER_ALBUM_SCRAPER_JS: &str = r#"(async () => {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  async function getToken() {
-    const res = await fetch(
-      'https://open.spotify.com/get_access_token?reason=transport&productType=web_player',
-      { credentials: 'include' }
+  function finish(unique) {
+    const text = unique.join('\\n');
+    window.__spotifyAlbumUrls = text;
+    console.log('TOTAL album URLs: ' + unique.length);
+    console.log(text);
+    alert(
+      'Found ' + unique.length + ' albums.\\n\\n' +
+      'In the console run:\\n\\ncopy(window.__spotifyAlbumUrls)\\n\\n' +
+      'Then paste into Spotify Downloader.'
     );
-    if (!res.ok) throw new Error('Token HTTP ' + res.status);
-    const data = await res.json();
-    if (!data.accessToken) throw new Error('No accessToken in response');
-    return data.accessToken;
+    return unique;
   }
 
   async function fetchAllSavedAlbumUrls(token) {
@@ -46,15 +49,12 @@ pub const BROWSER_ALBUM_SCRAPER_JS: &str = r#"(async () => {
         { headers: { Authorization: 'Bearer ' + token } }
       );
       if (res.status === 429) {
-        const wait = Number(res.headers.get('Retry-After') || '3');
-        console.warn('Rate limited, waiting ' + wait + 's...');
+        const wait = Number(res.headers.get('Retry-After') || '5');
+        console.warn('Rate limited listing albums, waiting ' + wait + 's...');
         await sleep(wait * 1000);
         continue;
       }
-      if (!res.ok) {
-        const body = await res.text();
-        throw new Error('me/albums HTTP ' + res.status + ': ' + body.slice(0, 200));
-      }
+      if (!res.ok) throw new Error('me/albums HTTP ' + res.status);
       const data = await res.json();
       for (const item of (data.items || [])) {
         const id = item?.album?.id;
@@ -62,29 +62,126 @@ pub const BROWSER_ALBUM_SCRAPER_JS: &str = r#"(async () => {
         if (ext) urls.push(ext.split('?')[0]);
         else if (id) urls.push('https://open.spotify.com/album/' + id);
       }
-      console.log('Fetched ' + urls.length + ' albums so far...');
+      console.log('API albums so far: ' + urls.length);
       if (!data.next) break;
       offset += limit;
-      await sleep(200);
+      await sleep(250);
     }
     return [...new Set(urls)];
   }
 
-  console.log('Fetching ALL saved albums via your Spotify session (ignore CORS noise)...');
-  const token = await getToken();
-  const unique = await fetchAllSavedAlbumUrls(token);
-  const text = unique.join('\n');
-  window.__spotifyAlbumUrls = text;
-  console.log('TOTAL album URLs: ' + unique.length);
-  console.log(text);
+  function captureTokenFromNetwork(timeoutMs) {
+    return new Promise((resolve) => {
+      let done = false;
+      const finishTok = (tok) => {
+        if (done || !tok) return;
+        done = true;
+        resolve(tok);
+      };
+      const timer = setTimeout(() => finishTok(null), timeoutMs);
 
-  alert(
-    'Found ' + unique.length + ' saved albums.\\n\\n' +
-    'Clipboard is often blocked — in the console run:\\n\\n' +
-    'copy(window.__spotifyAlbumUrls)\\n\\n' +
-    'Then paste into Spotify Downloader.'
-  );
-  return unique;
+      const checkHeaders = (headers) => {
+        if (!headers) return null;
+        try {
+          if (typeof headers.get === 'function') {
+            const a = headers.get('Authorization') || headers.get('authorization');
+            if (a && a.startsWith('Bearer ')) return a.slice(7);
+          } else if (typeof headers === 'object') {
+            const a = headers.Authorization || headers.authorization;
+            if (typeof a === 'string' && a.startsWith('Bearer ')) return a.slice(7);
+          }
+        } catch (_) {}
+        return null;
+      };
+
+      const origFetch = window.fetch;
+      window.fetch = async function (...args) {
+        try {
+          const tok = checkHeaders(args[1] && args[1].headers);
+          if (tok) {
+            clearTimeout(timer);
+            window.fetch = origFetch;
+            finishTok(tok);
+          }
+        } catch (_) {}
+        return origFetch.apply(this, args);
+      };
+
+      const OrigXHR = window.XMLHttpRequest;
+      function XHRWrap() {
+        const xhr = new OrigXHR();
+        const open = xhr.open;
+        xhr.open = function (...oargs) {
+          return open.apply(xhr, oargs);
+        };
+        const setRequestHeader = xhr.setRequestHeader;
+        xhr.setRequestHeader = function (k, v) {
+          if (String(k).toLowerCase() === 'authorization' && String(v).startsWith('Bearer ')) {
+            clearTimeout(timer);
+            window.XMLHttpRequest = OrigXHR;
+            window.fetch = origFetch;
+            finishTok(String(v).slice(7));
+          }
+          return setRequestHeader.apply(xhr, arguments);
+        };
+        return xhr;
+      }
+      window.XMLHttpRequest = XHRWrap;
+
+      // Nudge the web player to make an authenticated request.
+      try { history.pushState({}, '', '/collection/albums'); } catch (_) {}
+      window.dispatchEvent(new Event('focus'));
+      const links = document.querySelectorAll('a[href*="/collection"], a[href*="/album/"]');
+      if (links[0]) links[0].dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    });
+  }
+
+  async function scrapeDomAlbums() {
+    console.log('Falling back to deep page scrape (scroll until count stabilizes)...');
+    const collect = () => [...document.querySelectorAll('a[href*="/album/"]')]
+      .map((a) => (a.href || '').split('?')[0])
+      .filter((h) => /open\.spotify\.com\/album\/[A-Za-z0-9]+/.test(h));
+
+    let unique = [];
+    let stable = 0;
+    for (let i = 0; i < 120 && stable < 8; i++) {
+      const nodes = [
+        ...document.querySelectorAll('[data-overlayscrollbars-viewport], [data-testid="section-entity-list"], main, section')
+      ];
+      for (const n of nodes) {
+        try { n.scrollTop = n.scrollHeight; } catch (_) {}
+      }
+      const root = document.scrollingElement || document.documentElement;
+      root.scrollTo(0, root.scrollHeight);
+      window.scrollTo(0, document.body.scrollHeight);
+      const before = unique.length;
+      unique = [...new Set([...unique, ...collect()])];
+      if (unique.length === before) stable++; else stable = 0;
+      console.log('DOM albums: ' + unique.length + ' (pass ' + (i + 1) + ')');
+      await sleep(400);
+    }
+    return unique;
+  }
+
+  console.log('Ignore CORS/gabo-receiver noise. Capturing Spotify Bearer token from live requests...');
+  let token = await captureTokenFromNetwork(8000);
+  if (!token) {
+    console.warn('No token captured quickly — click around Your Library / Albums once, waiting longer...');
+    token = await captureTokenFromNetwork(15000);
+  }
+
+  if (token) {
+    console.log('Got session token — paging ALL saved albums...');
+    try {
+      return finish(await fetchAllSavedAlbumUrls(token));
+    } catch (e) {
+      console.warn('API list failed, using DOM fallback:', e);
+    }
+  } else {
+    console.warn('Could not capture token (get_access_token is often 403). Using DOM fallback.');
+  }
+
+  return finish(await scrapeDomAlbums());
 })();"#;
 
 #[derive(Debug, Clone)]

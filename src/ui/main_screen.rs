@@ -1,5 +1,7 @@
 use crate::ui::DownloaderApp;
 use eframe::egui;
+use rfd::FileDialog;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::channel;
 use std::sync::Arc;
@@ -199,6 +201,104 @@ impl DownloaderApp {
                             format!(
                                 "✅ Scraped {} album(s) from paste ({} tracks).",
                                 imported.album_count, n_tracks
+                            ),
+                        ))
+                    }
+                    Err(e) => Err(e),
+                };
+                let _ = tx.send(result);
+                ctx.request_repaint();
+            });
+        }
+
+        ui.add_space(14.0);
+        ui.separator();
+        ui.heading("Screenshot OCR import");
+        ui.label(
+            egui::RichText::new(
+                "No Spotify API and no page JavaScript. Needs tesseract installed on your PC.",
+            )
+            .small()
+            .weak(),
+        );
+        ui.add_space(4.0);
+        ui.label(
+            "1) Open Your Library → Albums (web or desktop)\n\
+             2) Scroll slowly and take overlapping screenshots (Win+Shift+S / macOS Cmd+Shift+4)\n\
+             3) Put every PNG/JPG into one folder\n\
+             4) Choose that folder → Import from screenshots\n\
+             5) App OCRs titles, finds Spotify album links, scrapes tracks → Download All",
+        );
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            if ui.button("Choose screenshot folder").clicked() {
+                if let Some(path) = FileDialog::new().pick_folder() {
+                    self.screenshot_dir = path.display().to_string();
+                }
+            }
+            if ui.button("Check OCR (tesseract)").clicked() {
+                self.load_status = "Checking tesseract + OCR resolve pipeline...".to_string();
+                let (tx, rx) = channel();
+                self.load_rx = Some(rx);
+                let ctx = ui.ctx().clone();
+                self.is_loading = true;
+                self.rt.spawn(async move {
+                    let result = match crate::ocr_import::check_ocr_pipeline().await {
+                        Ok(msg) => Ok((Vec::new(), msg)),
+                        Err(e) => Err(e),
+                    };
+                    let _ = tx.send(result);
+                    ctx.request_repaint();
+                });
+            }
+        });
+        ui.add_space(4.0);
+        ui.add(
+            egui::TextEdit::singleline(&mut self.screenshot_dir)
+                .desired_width(f32::INFINITY)
+                .hint_text("Path to folder of album screenshots…"),
+        );
+        ui.add_space(6.0);
+        let can_ocr = !self.is_loading && !self.screenshot_dir.trim().is_empty();
+        if ui
+            .add_enabled(
+                can_ocr,
+                egui::Button::new("Import from screenshots (OCR)"),
+            )
+            .on_hover_text(
+                "Runs tesseract on every image, resolves album names to Spotify links via web search, then scrapes track lists.",
+            )
+            .clicked()
+        {
+            self.is_loading = true;
+            self.load_status =
+                "OCR'ing screenshots → resolving album links → scraping tracks...".to_string();
+            let folder = PathBuf::from(self.screenshot_dir.trim());
+            let (tx, rx) = channel();
+            self.load_rx = Some(rx);
+            let ctx = ui.ctx().clone();
+            self.rt.spawn(async move {
+                let result = match crate::ocr_import::import_from_screenshots(&folder).await {
+                    Ok(report) => {
+                        // Surface unresolved OCR lines so the user can retry / paste.
+                        if !report.unresolved_queries.is_empty() {
+                            tracing::info!(
+                                "OCR unresolved ({}): {}",
+                                report.unresolved_queries.len(),
+                                report.unresolved_queries.iter().take(20).cloned().collect::<Vec<_>>().join(" | ")
+                            );
+                        }
+                        let n_tracks = report.imported.track_urls.len();
+                        Ok((
+                            report.imported.track_urls,
+                            format!(
+                                "✅ OCR: {} image(s) → {} queries → {} album link(s) → {} album(s) / {} tracks ({} unresolved text lines).",
+                                report.image_count,
+                                report.candidate_queries.len(),
+                                report.resolved_album_urls.len(),
+                                report.imported.album_count,
+                                n_tracks,
+                                report.unresolved_queries.len()
                             ),
                         ))
                     }

@@ -12,6 +12,7 @@ type LoadOutcome = Result<(Vec<String>, String), String>;
 pub struct DownloaderApp {
     pub(crate) input_link: String,
     pub(crate) paste_albums: String,
+    pub(crate) screenshot_dir: String,
     pub(crate) show_config: bool,
     pub(crate) spotify_client_id: String,
     pub(crate) spotify_client_secret: String,
@@ -50,6 +51,7 @@ impl Default for DownloaderApp {
         Self {
             input_link: String::new(),
             paste_albums: String::new(),
+            screenshot_dir: String::new(),
             show_config: false,
             spotify_client_id: id,
             spotify_client_secret: secret,

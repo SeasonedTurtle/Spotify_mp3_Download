@@ -20,24 +20,61 @@ use crate::scraper;
 /// Must match the Spotify Developer Dashboard Redirect URI exactly.
 pub const DEFAULT_REDIRECT_URI: &str = "http://127.0.0.1:8888";
 
-/// Paste this into the browser console on https://open.spotify.com/collection/albums
-/// after scrolling so all albums are visible. It copies album links to the clipboard.
+/// Paste this into the browser console on https://open.spotify.com/collection/albums.
+/// Ignores Spotify CORS noise. Avoids async clipboard blocking by using a textarea fallback
+/// and saving URLs on `window.__spotifyAlbumUrls` for a manual `copy(...)` if needed.
 pub const BROWSER_ALBUM_SCRAPER_JS: &str = r#"(async () => {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const root = document.querySelector('[data-testid="section-entity-list"], main, body') || document.body;
-  for (let i = 0; i < 40; i++) {
+  const collect = () => [...document.querySelectorAll('a[href*="/album/"]')]
+    .map((a) => (a.href || '').split('?')[0])
+    .filter((h) => /open\.spotify\.com\/album\/[A-Za-z0-9]+/.test(h));
+
+  let unique = [];
+  for (let i = 0; i < 50; i++) {
+    const root = document.scrollingElement || document.documentElement;
     root.scrollTo(0, root.scrollHeight);
     window.scrollTo(0, document.body.scrollHeight);
-    await sleep(400);
+    unique = [...new Set([...unique, ...collect()])];
+    await sleep(350);
   }
-  const urls = [...document.querySelectorAll('a[href*="/album/"]')]
-    .map((a) => a.href.split('?')[0])
-    .filter((h) => /open\.spotify\.com\/album\/[A-Za-z0-9]+/.test(h));
-  const unique = [...new Set(urls)];
+
   const text = unique.join('\n');
-  await navigator.clipboard.writeText(text);
-  console.log(`Copied ${unique.length} album URLs to clipboard`);
-  alert(`Copied ${unique.length} album URLs. Paste them into Spotify Downloader → Import pasted albums.`);
+  window.__spotifyAlbumUrls = text;
+  console.log('Album URLs (' + unique.length + '):');
+  console.log(text);
+
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.top = '0';
+  ta.style.left = '0';
+  ta.style.width = '2em';
+  ta.style.height = '2em';
+  ta.style.padding = '0';
+  ta.style.border = 'none';
+  ta.style.outline = 'none';
+  ta.style.boxShadow = 'none';
+  ta.style.background = 'transparent';
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  let copied = false;
+  try {
+    copied = document.execCommand('copy');
+  } catch (_) {}
+  document.body.removeChild(ta);
+  if (!copied) {
+    try {
+      await navigator.clipboard.writeText(text);
+      copied = true;
+    } catch (_) {}
+  }
+
+  if (copied) {
+    alert('Copied ' + unique.length + ' album URLs. Paste into Spotify Downloader.');
+  } else {
+    alert('Found ' + unique.length + ' albums. Clipboard blocked.\\nIn the console run:\\ncopy(window.__spotifyAlbumUrls)\\nthen paste into the app.');
+  }
   return unique;
 })();"#;
 

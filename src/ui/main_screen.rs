@@ -139,7 +139,9 @@ impl DownloaderApp {
         ui.label(
             "1) Open https://open.spotify.com/collection/albums (logged in)\n\
              2) Click Copy console scraper → paste into browser console (F12) → Enter\n\
-             3) Paste the copied album URLs in the box → Import pasted albums → Download All",
+             3) Ignore Spotify CORS/gabo-receiver errors — they are normal\n\
+             4) If clipboard is blocked, in console run: copy(window.__spotifyAlbumUrls)\n\
+             5) Paste URLs here → Import pasted albums → Download All",
         );
         ui.add_space(6.0);
         ui.horizontal(|ui| {

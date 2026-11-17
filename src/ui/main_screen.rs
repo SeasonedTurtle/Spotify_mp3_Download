@@ -137,12 +137,17 @@ impl DownloaderApp {
         );
         ui.add_space(4.0);
         ui.label(
-            "1) Open https://open.spotify.com/collection/albums (logged in)\n\
-             2) Copy console scraper → paste in console (F12) → Enter\n\
-             3) If it says capturing token, click around Your Library once\n\
-             4) Wait for TOTAL album URLs (ignore CORS / Token 403 noise)\n\
-             5) Run: copy(window.__spotifyAlbumUrls) → paste here → Import → Download All\n\
-             Tip: Import Saved Albums (with Client ID/Secret) also lists the full library.",
+            "1) Open https://open.spotify.com/collection/albums (logged in)
+\
+             2) Copy console scraper → paste in console (F12) → Enter
+\
+             3) Leave it alone while it scrolls (no API / no 429)
+\
+             4) When TOTAL prints, run: copy(window.__spotifyAlbumUrls)
+\
+             5) Paste here → Import pasted albums → Download All
+\
+             Ignore CORS errors. If count looks low, scroll manually and run again.",
         );
         ui.add_space(6.0);
         ui.horizontal(|ui| {

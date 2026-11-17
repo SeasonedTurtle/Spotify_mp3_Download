@@ -21,172 +21,113 @@ use crate::scraper;
 pub const DEFAULT_REDIRECT_URI: &str = "http://127.0.0.1:8888";
 
 /// Paste on https://open.spotify.com/collection/albums (logged in).
-/// Tries to snag the live Bearer token from Spotify's own requests, then pages
-/// /me/albums for the FULL library. Falls back to deep DOM scrolling if needed.
+/// DOM-only: scrolls the page/list and collects album links. No Spotify API calls
+/// (avoids 429). After it finishes, run: copy(window.__spotifyAlbumUrls)
 pub const BROWSER_ALBUM_SCRAPER_JS: &str = r#"(async () => {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  function finish(unique) {
-    const text = unique.join('\\n');
-    window.__spotifyAlbumUrls = text;
-    console.log('TOTAL album URLs: ' + unique.length);
-    console.log(text);
-    alert(
-      'Found ' + unique.length + ' albums.\\n\\n' +
-      'In the console run:\\n\\ncopy(window.__spotifyAlbumUrls)\\n\\n' +
-      'Then paste into Spotify Downloader.'
-    );
-    return unique;
-  }
+  const albumRe = /open\.spotify\.com\/album\/([A-Za-z0-9]+)/;
 
-  async function fetchAllSavedAlbumUrls(token) {
-    const urls = [];
-    let offset = 0;
-    const limit = 50;
-    let strikes = 0;
-    for (;;) {
-      const res = await fetch(
-        'https://api.spotify.com/v1/me/albums?limit=' + limit + '&offset=' + offset,
-        { headers: { Authorization: 'Bearer ' + token } }
-      );
-      if (res.status === 429) {
-        strikes++;
-        const wait = Math.max(Number(res.headers.get('Retry-After') || '30'), 15) + 5;
-        console.warn('Rate limited (strike ' + strikes + '/4). WAIT ' + wait + 's — do not re-run the script.');
-        if (strikes >= 4) throw new Error('Too many 429s on me/albums');
-        await sleep(wait * 1000);
-        continue;
-      }
-      strikes = 0;
-      if (!res.ok) throw new Error('me/albums HTTP ' + res.status);
-      const data = await res.json();
-      for (const item of (data.items || [])) {
-        const id = item?.album?.id;
-        const ext = item?.album?.external_urls?.spotify;
-        if (ext) urls.push(ext.split('?')[0]);
-        else if (id) urls.push('https://open.spotify.com/album/' + id);
-      }
-      console.log('API albums so far: ' + urls.length);
-      if (!data.next) break;
-      offset += limit;
-      // Go slow so Spotify does not 429 mid-library.
-      await sleep(1500);
+  function collectFromDom() {
+    const found = new Set();
+    for (const a of document.querySelectorAll('a[href*="/album/"]')) {
+      const href = (a.href || a.getAttribute('href') || '').split('?')[0];
+      const m = href.match(albumRe);
+      if (m) found.add('https://open.spotify.com/album/' + m[1]);
     }
-    return [...new Set(urls)];
+    // Also pick up URIs hidden in attributes / row data.
+    for (const el of document.querySelectorAll('[href*="spotify:album:"], [uri*="spotify:album:"], [data-uri*="spotify:album:"]')) {
+      const raw = el.getAttribute('href') || el.getAttribute('uri') || el.getAttribute('data-uri') || '';
+      const m = raw.match(/spotify:album:([A-Za-z0-9]+)/);
+      if (m) found.add('https://open.spotify.com/album/' + m[1]);
+    }
+    return [...found];
   }
 
-  function captureTokenFromNetwork(timeoutMs) {
-    return new Promise((resolve) => {
-      let done = false;
-      const finishTok = (tok) => {
-        if (done || !tok) return;
-        done = true;
-        resolve(tok);
-      };
-      const timer = setTimeout(() => finishTok(null), timeoutMs);
+  function scrollCandidates() {
+    const nodes = new Set();
+    for (const sel of [
+      '[data-overlayscrollbars-viewport]',
+      '[data-testid="section-entity-list"]',
+      '[data-testid="grid"]',
+      'main',
+      'section',
+      '[role="grid"]',
+      '[role="presentation"]',
+    ]) {
+      document.querySelectorAll(sel).forEach((n) => nodes.add(n));
+    }
+    nodes.add(document.scrollingElement || document.documentElement);
+    nodes.add(document.body);
+    return [...nodes];
+  }
 
-      const checkHeaders = (headers) => {
-        if (!headers) return null;
-        try {
-          if (typeof headers.get === 'function') {
-            const a = headers.get('Authorization') || headers.get('authorization');
-            if (a && a.startsWith('Bearer ')) return a.slice(7);
-          } else if (typeof headers === 'object') {
-            const a = headers.Authorization || headers.authorization;
-            if (typeof a === 'string' && a.startsWith('Bearer ')) return a.slice(7);
-          }
-        } catch (_) {}
-        return null;
-      };
+  function scrollAll() {
+    for (const n of scrollCandidates()) {
+      try {
+        const max = (n.scrollHeight || 0) - (n.clientHeight || 0);
+        if (max > 0) n.scrollTop = Math.min((n.scrollTop || 0) + Math.max(n.clientHeight * 0.9, 400), n.scrollHeight);
+        else n.scrollTop = n.scrollHeight;
+      } catch (_) {}
+    }
+    window.scrollBy(0, Math.max(window.innerHeight * 0.9, 500));
+  }
 
-      const origFetch = window.fetch;
-      window.fetch = async function (...args) {
-        try {
-          const tok = checkHeaders(args[1] && args[1].headers);
-          if (tok) {
-            clearTimeout(timer);
-            window.fetch = origFetch;
-            finishTok(tok);
-          }
-        } catch (_) {}
-        return origFetch.apply(this, args);
-      };
+  console.log('DOM album scanner starting — no API calls. Ignore CORS noise.');
+  console.log('Keep this tab focused on Your Library → Albums.');
 
-      const OrigXHR = window.XMLHttpRequest;
-      function XHRWrap() {
-        const xhr = new OrigXHR();
-        const open = xhr.open;
-        xhr.open = function (...oargs) {
-          return open.apply(xhr, oargs);
-        };
-        const setRequestHeader = xhr.setRequestHeader;
-        xhr.setRequestHeader = function (k, v) {
-          if (String(k).toLowerCase() === 'authorization' && String(v).startsWith('Bearer ')) {
-            clearTimeout(timer);
-            window.XMLHttpRequest = OrigXHR;
-            window.fetch = origFetch;
-            finishTok(String(v).slice(7));
-          }
-          return setRequestHeader.apply(xhr, arguments);
-        };
-        return xhr;
+  // Jump to albums collection if needed.
+  if (!location.pathname.includes('/collection/albums')) {
+    location.href = 'https://open.spotify.com/collection/albums';
+    await sleep(2500);
+  }
+
+  let unique = new Set();
+  let stable = 0;
+  const maxPasses = 200;
+
+  for (let i = 1; i <= maxPasses && stable < 12; i++) {
+    scrollAll();
+    await sleep(450);
+
+    const before = unique.size;
+    for (const u of collectFromDom()) unique.add(u);
+    const after = unique.size;
+
+    if (after === before) stable++;
+    else stable = 0;
+
+    if (i % 5 === 0 || after !== before) {
+      console.log('Pass ' + i + ': ' + after + ' albums (stable ' + stable + '/12)');
+    }
+
+    // Every so often jump back to top then bottom to force virtualized rows to remount.
+    if (i % 25 === 0) {
+      for (const n of scrollCandidates()) {
+        try { n.scrollTop = 0; } catch (_) {}
       }
-      window.XMLHttpRequest = XHRWrap;
-
-      // Nudge the web player to make an authenticated request.
-      try { history.pushState({}, '', '/collection/albums'); } catch (_) {}
-      window.dispatchEvent(new Event('focus'));
-      const links = document.querySelectorAll('a[href*="/collection"], a[href*="/album/"]');
-      if (links[0]) links[0].dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-    });
-  }
-
-  async function scrapeDomAlbums() {
-    console.log('Falling back to deep page scrape (scroll until count stabilizes)...');
-    const collect = () => [...document.querySelectorAll('a[href*="/album/"]')]
-      .map((a) => (a.href || '').split('?')[0])
-      .filter((h) => /open\.spotify\.com\/album\/[A-Za-z0-9]+/.test(h));
-
-    let unique = [];
-    let stable = 0;
-    for (let i = 0; i < 120 && stable < 8; i++) {
-      const nodes = [
-        ...document.querySelectorAll('[data-overlayscrollbars-viewport], [data-testid="section-entity-list"], main, section')
-      ];
-      for (const n of nodes) {
+      window.scrollTo(0, 0);
+      await sleep(600);
+      for (const n of scrollCandidates()) {
         try { n.scrollTop = n.scrollHeight; } catch (_) {}
       }
-      const root = document.scrollingElement || document.documentElement;
-      root.scrollTo(0, root.scrollHeight);
       window.scrollTo(0, document.body.scrollHeight);
-      const before = unique.length;
-      unique = [...new Set([...unique, ...collect()])];
-      if (unique.length === before) stable++; else stable = 0;
-      console.log('DOM albums: ' + unique.length + ' (pass ' + (i + 1) + ')');
-      await sleep(400);
+      await sleep(600);
     }
-    return unique;
   }
 
-  console.log('Ignore CORS/gabo-receiver noise. Capturing Spotify Bearer token from live requests...');
-  let token = await captureTokenFromNetwork(8000);
-  if (!token) {
-    console.warn('No token captured quickly — click around Your Library / Albums once, waiting longer...');
-    token = await captureTokenFromNetwork(15000);
-  }
-
-  if (token) {
-    console.log('Got session token — paging ALL saved albums...');
-    try {
-      return finish(await fetchAllSavedAlbumUrls(token));
-    } catch (e) {
-      console.warn('API list failed, using DOM fallback:', e);
-    }
-  } else {
-    console.warn('Could not capture token (get_access_token is often 403). Using DOM fallback.');
-  }
-
-  return finish(await scrapeDomAlbums());
+  const list = [...unique];
+  const text = list.join('\\n');
+  window.__spotifyAlbumUrls = text;
+  console.log('TOTAL album URLs: ' + list.length);
+  console.log(text);
+  alert(
+    'Collected ' + list.length + ' album URLs from the page (no API).\\n\\n' +
+    'In the console run:\\n\\ncopy(window.__spotifyAlbumUrls)\\n\\n' +
+    'Then paste into Spotify Downloader.\\n\\n' +
+    'If the count is low, scroll the albums list manually a bit and run the scraper again.'
+  );
+  return list;
 })();"#;
 
 #[derive(Debug, Clone)]

@@ -12,7 +12,20 @@ impl DownloaderApp {
         unsafe {
             std::env::set_var("RSPOTIFY_CLIENT_ID", &self.spotify_client_id);
             std::env::set_var("RSPOTIFY_CLIENT_SECRET", &self.spotify_client_secret);
-            std::env::set_var("RSPOTIFY_REDIRECT_URI", &self.redirect_uri);
+            // Keep OAuth redirect without /callback (Dashboard must match exactly).
+            let redirect = self
+                .redirect_uri
+                .trim()
+                .trim_end_matches('/')
+                .trim_end_matches("/callback");
+            std::env::set_var(
+                "RSPOTIFY_REDIRECT_URI",
+                if redirect.is_empty() {
+                    library::DEFAULT_REDIRECT_URI
+                } else {
+                    redirect
+                },
+            );
             std::env::set_var("DOWNLOAD_DIR", &self.download_dir);
             std::env::set_var("METADATA_SOURCE", self.metadata_source.as_env_value());
         }
@@ -71,7 +84,7 @@ impl DownloaderApp {
         });
         ui.label(
             egui::RichText::new(format!(
-                "Add this exact Redirect URI in the Spotify Developer Dashboard. Default: {}",
+                "In Spotify Developer Dashboard → your app → Redirect URIs, add exactly: {}  (no /callback). Also paste Client ID/Secret from that same app.",
                 library::DEFAULT_REDIRECT_URI
             ))
             .small()

@@ -39,7 +39,11 @@ impl Default for DownloaderApp {
         let secret = env::var("RSPOTIFY_CLIENT_SECRET").unwrap_or_default();
         let dir = env::var("DOWNLOAD_DIR").unwrap_or_else(|_| "downloads".to_string());
         let redirect_uri = env::var("RSPOTIFY_REDIRECT_URI")
-            .unwrap_or_else(|_| crate::library::DEFAULT_REDIRECT_URI.to_string());
+            .unwrap_or_else(|_| crate::library::DEFAULT_REDIRECT_URI.to_string())
+            .trim()
+            .trim_end_matches('/')
+            .trim_end_matches("/callback")
+            .to_string();
         let metadata_source = MetadataSource::from_env();
 
         Self {

@@ -3740,6 +3740,8 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
+ "webbrowser",
 ]
 
 [[package]]

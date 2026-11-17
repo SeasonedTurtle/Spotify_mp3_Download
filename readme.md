@@ -17,9 +17,11 @@ Switch modes in **Config**. Save Config applies credentials to the running sessi
 On the main screen, **Import Saved Albums** logs you into Spotify in the browser, scans every album in your library, and queues all tracks for download.
 
 Requires:
-1. Client ID + Client Secret in Config
-2. Redirect URI `http://127.0.0.1:8888/callback` added in the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard) for your app
-3. Scope used: `user-library-read`
+1. A [Spotify Developer app](https://developer.spotify.com/dashboard) (being logged into open.spotify.com alone is not enough)
+2. Client ID + Client Secret from that app, pasted in Config
+3. Redirect URI **exactly** `http://127.0.0.1:8888` added in the Dashboard (no `/callback`)
+4. If the app is in Development mode, add your Spotify account under Users
+5. Scope used: `user-library-read`
 
 ### Folder layout
 Downloads are organized by album name:
@@ -116,7 +118,7 @@ METADATA_SOURCE=scrape
 DOWNLOAD_DIR=downloads
 RSPOTIFY_CLIENT_ID=
 RSPOTIFY_CLIENT_SECRET=
-RSPOTIFY_REDIRECT_URI=http://127.0.0.1:8888/callback
+RSPOTIFY_REDIRECT_URI=http://127.0.0.1:8888
 ```
 
 `METADATA_SOURCE` may be `scrape` (default) or `api`.

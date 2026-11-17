@@ -125,69 +125,81 @@ impl DownloaderApp {
             }
         });
 
-        ui.add_space(10.0);
-        ui.collapsing("Paste albums / browser scraper (no API rate limits)", |ui| {
-            ui.label(
-                egui::RichText::new(
-                    "1) Open https://open.spotify.com/collection/albums while logged in\n\
-                     2) Open DevTools console (F12) and paste the scraper script\n\
-                     3) Paste the copied album URLs below → Import pasted albums",
-                )
-                .small(),
-            );
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                if ui.button("Copy console scraper").clicked() {
-                    ui.ctx()
-                        .copy_text(crate::library::BROWSER_ALBUM_SCRAPER_JS.to_string());
-                    self.load_status =
-                        "📋 Console scraper copied. Paste it on open.spotify.com/collection/albums."
-                            .to_string();
-                }
-            });
-            ui.add_space(4.0);
-            ui.add(
-                egui::TextEdit::multiline(&mut self.paste_albums)
-                    .desired_width(f32::INFINITY)
-                    .desired_rows(4)
-                    .hint_text("https://open.spotify.com/album/...\nhttps://open.spotify.com/album/..."),
-            );
-            ui.add_space(4.0);
-            let can_paste = !self.is_loading && !self.paste_albums.trim().is_empty();
-            if ui
-                .add_enabled(can_paste, egui::Button::new("Import pasted albums (scrape)"))
-                .on_hover_text(
-                    "Expands every pasted album URL using public embed JSON — no Spotify API track calls.",
-                )
-                .clicked()
-            {
-                self.is_loading = true;
+        ui.add_space(12.0);
+        ui.separator();
+        ui.heading("Paste albums / browser scraper");
+        ui.label(
+            egui::RichText::new(
+                "No API rate limits. Use this instead of Import Saved Albums for big libraries.",
+            )
+            .small()
+            .weak(),
+        );
+        ui.add_space(4.0);
+        ui.label(
+            "1) Open https://open.spotify.com/collection/albums (logged in)\n\
+             2) Click Copy console scraper → paste into browser console (F12) → Enter\n\
+             3) Paste the copied album URLs in the box → Import pasted albums → Download All",
+        );
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            if ui.button("Copy console scraper").clicked() {
+                ui.ctx()
+                    .copy_text(crate::library::BROWSER_ALBUM_SCRAPER_JS.to_string());
                 self.load_status =
-                    "Scraping pasted albums via embed JSON (no API track listing)...".to_string();
-                let pasted = self.paste_albums.clone();
-                let (tx, rx) = channel();
-                self.load_rx = Some(rx);
-                let ctx = ui.ctx().clone();
-                self.rt.spawn(async move {
-                    let result = match crate::library::import_albums_from_pasted_text(&pasted).await
-                    {
-                        Ok(imported) => {
-                            let n_tracks = imported.track_urls.len();
-                            Ok((
-                                imported.track_urls,
-                                format!(
-                                    "✅ Scraped {} album(s) from paste ({} tracks).",
-                                    imported.album_count, n_tracks
-                                ),
-                            ))
-                        }
-                        Err(e) => Err(e),
-                    };
-                    let _ = tx.send(result);
-                    ctx.request_repaint();
-                });
+                    "📋 Console scraper copied. Paste it on open.spotify.com/collection/albums console."
+                        .to_string();
+            }
+            if ui.button("Open collection/albums").clicked() {
+                let _ = webbrowser::open("https://open.spotify.com/collection/albums");
             }
         });
+        ui.add_space(6.0);
+        ui.add(
+            egui::TextEdit::multiline(&mut self.paste_albums)
+                .desired_width(f32::INFINITY)
+                .desired_rows(5)
+                .hint_text(
+                    "Paste album URLs here, one per line:\nhttps://open.spotify.com/album/...",
+                ),
+        );
+        ui.add_space(6.0);
+        let can_paste = !self.is_loading && !self.paste_albums.trim().is_empty();
+        if ui
+            .add_enabled(
+                can_paste,
+                egui::Button::new("Import pasted albums (scrape)"),
+            )
+            .on_hover_text(
+                "Expands every pasted album URL using public embed JSON — no Spotify API track calls.",
+            )
+            .clicked()
+        {
+            self.is_loading = true;
+            self.load_status =
+                "Scraping pasted albums via embed JSON (no API track listing)...".to_string();
+            let pasted = self.paste_albums.clone();
+            let (tx, rx) = channel();
+            self.load_rx = Some(rx);
+            let ctx = ui.ctx().clone();
+            self.rt.spawn(async move {
+                let result = match crate::library::import_albums_from_pasted_text(&pasted).await {
+                    Ok(imported) => {
+                        let n_tracks = imported.track_urls.len();
+                        Ok((
+                            imported.track_urls,
+                            format!(
+                                "✅ Scraped {} album(s) from paste ({} tracks).",
+                                imported.album_count, n_tracks
+                            ),
+                        ))
+                    }
+                    Err(e) => Err(e),
+                };
+                let _ = tx.send(result);
+                ctx.request_repaint();
+            });
+        }
 
         if !self.load_status.is_empty() {
             ui.add_space(5.0);
